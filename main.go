@@ -1,0 +1,84 @@
+package main
+
+import (
+	"context"
+	"embed"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
+)
+
+//go:embed web/*
+var webFS embed.FS
+
+func main() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		log.Fatalf("configuration: %v", err)
+	}
+	store, err := OpenStore(cfg.DataDir)
+	if err != nil {
+		log.Fatalf("base de données: %v", err)
+	}
+	secret, err := loadSecret(cfg.DataDir, cfg.SessionSecret)
+	if err != nil {
+		log.Fatalf("secret de session: %v", err)
+	}
+
+	uv := protocol.VerificationRequired
+	if getenv("USER_VERIFICATION", "required") == "preferred" {
+		uv = protocol.VerificationPreferred
+	}
+	wa, err := webauthn.New(&webauthn.Config{
+		RPDisplayName: cfg.RPName,
+		RPID:          cfg.RPID,
+		RPOrigins:     cfg.RPOrigins,
+		AuthenticatorSelection: protocol.AuthenticatorSelection{
+			ResidentKey:      protocol.ResidentKeyRequirementRequired,
+			UserVerification: uv,
+		},
+	})
+	if err != nil {
+		log.Fatalf("webauthn: %v", err)
+	}
+
+	app := &App{
+		cfg:      cfg,
+		store:    store,
+		wa:       wa,
+		sessions: &Sessions{secret: secret, ttl: cfg.SessionTTL},
+		login:    NewCeremonies[webauthn.SessionData](),
+		enroll:   NewCeremonies[enrollState](),
+	}
+
+	servers := []*http.Server{{Addr: cfg.Listen, Handler: app.publicHandler()}}
+	if cfg.EnrollEnabled {
+		servers = append(servers, &http.Server{Addr: cfg.EnrollListen, Handler: app.enrollHandler()})
+		log.Printf("ATTENTION: enrôlement activé sur %s — ne pas exposer ce port publiquement", cfg.EnrollListen)
+	}
+	for _, s := range servers {
+		s.ReadHeaderTimeout = 10 * time.Second
+		go func() {
+			log.Printf("écoute sur %s", s.Addr)
+			if err := s.ListenAndServe(); err != http.ErrServerClosed {
+				log.Fatal(err)
+			}
+		}()
+	}
+	log.Printf("proxy -> %s (%d utilisateur(s) enregistré(s))", cfg.Upstream, store.Count())
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, s := range servers {
+		_ = s.Shutdown(ctx)
+	}
+}

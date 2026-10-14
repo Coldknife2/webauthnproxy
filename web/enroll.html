@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Enrôlement des passkeys</title>
+<style>
+ body{font-family:system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 1rem;color:#111}
+ input,button{font-size:1rem;padding:.5rem .8rem;border-radius:6px;border:1px solid #bbb}
+ button{background:#2563eb;color:#fff;border:0;cursor:pointer}
+ button.del{background:#b91c1c;padding:.2rem .6rem;font-size:.85rem}
+ li{margin:.4rem 0} code{background:#eee;padding:0 .3rem;border-radius:4px}
+ #msg{min-height:1.4em;margin-top:.8rem} .err{color:#b91c1c} .ok{color:#15803d}
+ .warn{background:#fef3c7;padding:.6rem 1rem;border-radius:8px}
+</style></head>
+<body>
+ <h1>Enrôlement des passkeys</h1>
+ <p class="warn">Endpoint d'administration : ne doit pas être exposé publiquement.</p>
+ <form id="f">
+   <input id="name" placeholder="Nom d'utilisateur" required maxlength="64" autofocus>
+   <button>Ajouter une passkey</button>
+ </form>
+ <div id="msg"></div>
+ <h2>Utilisateurs enregistrés</h2>
+ <ul id="list"></ul>
+<script src="/_wap/app.js"></script>
+<script src="/_wap/enroll.js"></script></body></html>

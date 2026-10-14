@@ -1,0 +1,46 @@
+# Exemple : Traefik -> webauthnproxy -> site web
+services:
+  traefik:
+    image: traefik:v3
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --certificatesresolvers.le.acme.email=vous@example.com
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+    ports: ["443:443"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
+
+  monsite:            # le site à protéger : AUCUN label traefik, non exposé
+    image: nginx:alpine
+
+  webauthnproxy:
+    build: .
+    environment:
+      UPSTREAM: http://monsite:80
+      RP_ID: example.com                    # domaine (ou parent) du site
+      RP_ORIGINS: https://app.example.com   # URL publique du site, sans slash final
+      # Enrôlement : décommenter uniquement quand on veut ajouter une passkey
+      # ENROLL_ENABLED: "true"
+      # ENROLL_PASSWORD: "change-me"
+      # RP_ORIGINS: https://app.example.com,https://enroll.example.com
+    volumes:
+      - ./data:/data
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.app.rule=Host(`app.example.com`)
+      - traefik.http.routers.app.entrypoints=websecure
+      - traefik.http.routers.app.tls.certresolver=le
+      - traefik.http.routers.app.service=app
+      - traefik.http.services.app.loadbalancer.server.port=8080
+      # Routeur d'enrôlement PRIVÉ (réseau interne uniquement) — à n'activer qu'avec ENROLL_ENABLED
+      # - traefik.http.routers.enroll.rule=Host(`enroll.example.com`)
+      # - traefik.http.routers.enroll.entrypoints=websecure
+      # - traefik.http.routers.enroll.tls.certresolver=le
+      # - traefik.http.routers.enroll.middlewares=lan
+      # - traefik.http.routers.enroll.service=enroll
+      # - traefik.http.services.enroll.loadbalancer.server.port=8081
+      # - traefik.http.middlewares.lan.ipallowlist.sourcerange=192.168.0.0/16,10.0.0.0/8

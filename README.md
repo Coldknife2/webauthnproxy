@@ -17,6 +17,7 @@ No passwords, no directory, no OIDC provider to deploy. Put it in front of a sit
 - [Features](#features)
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
+- [Container images](#container-images)
 - [Operating modes](#operating-modes)
 - [Enrolling passkeys](#enrolling-passkeys)
 - [Configuration](#configuration)
@@ -55,30 +56,97 @@ The protected site must **not** be reachable any other way than through the prox
 
 ## Quick start
 
-Local image (podman or docker, the commands are identical):
+You will protect a demo site with a passkey login. The **protected site** is whatever `UPSTREAM` points to; here it is
+[`traefik/whoami`](https://github.com/traefik/whoami), a tiny site that prints the request headers it receives, which lets you see the
+`X-Authenticated-User` header added by webauthnproxy.
 
-```sh
-git clone https://github.com/coldknife2/webauthnproxy && cd webauthnproxy
-podman build -t webauthnproxy .
-
-mkdir -p data && podman unshare chown 65532:65532 data   # docker: sudo chown 65532 data
-podman run -d --name webauthnproxy \
-  -p 8080:8080 -p 127.0.0.1:8081:8081 -v ./data:/data:Z \
-  -e UPSTREAM=http://host.containers.internal:3000 \
-  -e RP_ID=localhost -e RP_ORIGINS=http://localhost:8080,http://localhost:8081 \
-  -e ENROLL_ENABLED=true \
-  webauthnproxy
-
-podman logs webauthnproxy        # prints the bootstrap token ("Enrollment bootstrap token: …")
+```
+Browser ──► http://localhost:8080 ──► webauthnproxy ──► whoami:80
+                                      (passkey login)    (the protected site: not published, reachable only through the proxy)
 ```
 
-1. Open <http://localhost:8081>, enter the **bootstrap token** and a name: this creates the first passkey.
-2. Open <http://localhost:8080>: sign in with the passkey and your site appears.
-3. Once your passkeys are enrolled, restart the container **without** `ENROLL_ENABLED` to close enrollment.
+The commands work with docker; for podman replace `docker` by `podman` (and see the notes below each step).
 
-In production, HTTPS is mandatory (WebAuthn requires it outside `localhost`), `RP_ID` is your domain and `RP_ORIGINS` is the site's public URL.
-Complete Traefik examples: [`docker-compose.example.yml`](docker-compose.example.yml) (proxy mode) and
-[`docker-compose.forwardauth.example.yml`](docker-compose.forwardauth.example.yml) (forwardAuth mode).
+**1. Start the site to protect** (note: no `-p`: it is *not* reachable from outside)
+
+```sh
+docker network create wap
+docker run -d --name whoami --network wap docker.io/traefik/whoami
+```
+
+**2. Start webauthnproxy in front of it**
+
+```sh
+mkdir -p data && sudo chown 65532 data     # the image runs as uid 65532; rootless podman: podman unshare chown 65532:65532 data
+docker run -d --name webauthnproxy --network wap \
+  -p 8080:8080 -p 127.0.0.1:8081:8081 -v "$PWD/data:/data" \
+  -e UPSTREAM=http://whoami:80 \
+  -e RP_ID=localhost -e RP_ORIGINS=http://localhost:8080,http://localhost:8081 \
+  -e ENROLL_ENABLED=true \
+  ghcr.io/coldknife2/webauthnproxy:latest
+```
+
+`UPSTREAM` is the protected site (`whoami` is resolved on the shared `wap` network). Port `8080` is the protected entry point, `8081` the enrollment page
+(bound to localhost only). With podman and SELinux, add `:Z` to the volume. See [Container images](#container-images) for tags and other ways to install.
+
+**3. Enroll your first passkey**
+
+```sh
+docker logs webauthnproxy      # look for: "Enrollment bootstrap token: …"
+```
+
+Open <http://localhost:8081>, paste the **bootstrap token**, type a user name (e.g. `remi`) and create the passkey.
+
+**4. Use the protected site**
+
+Open <http://localhost:8080>: you are asked for your passkey, then whoami's page appears, including `X-Authenticated-User: remi`.
+Without the passkey, `whoami` cannot be reached at all.
+
+**5. Close enrollment** once your passkeys are enrolled: recreate the container *without* `-e ENROLL_ENABLED=true` (the data stays in `./data`).
+
+**Protect your own site instead**: set `UPSTREAM` to its URL (any address reachable from the container: another container on the same network,
+`http://host.docker.internal:3000`, a LAN address…). In production use HTTPS, set `RP_ID` to your domain and `RP_ORIGINS` to the public URL,
+and put Traefik in front: see [`docker-compose.example.yml`](docker-compose.example.yml) (proxy mode) and
+[`docker-compose.forwardauth.example.yml`](docker-compose.forwardauth.example.yml) (one deployment protecting several sites).
+
+## Container images
+
+Images are built and published by [GitHub Actions](.github/workflows/ci.yml) to the GitHub Container Registry, for `linux/amd64` and `linux/arm64`,
+only after the tests pass:
+
+```sh
+docker pull ghcr.io/coldknife2/webauthnproxy:latest
+docker run --rm ghcr.io/coldknife2/webauthnproxy:latest --version
+```
+
+| Tag | Meaning |
+|---|---|
+| `latest`, `main` | latest commit of the `main` branch |
+| `sha-<commit>` | a specific commit |
+| `1.2.3`, `1.2`, `1` | releases (git tag `v1.2.3`); pin one of these in production |
+
+**Install with Docker Compose**
+
+```yaml
+services:
+  webauthnproxy:
+    image: ghcr.io/coldknife2/webauthnproxy:latest   # or a pinned version, e.g. :1.2.3
+    restart: unless-stopped
+    environment:
+      UPSTREAM: http://mysite:80          # the site to protect
+      RP_ID: example.com
+      RP_ORIGINS: https://app.example.com
+    volumes:
+      - ./data:/data                      # chown 65532 ./data first
+```
+
+**Update**: `docker pull ghcr.io/coldknife2/webauthnproxy:latest`, then recreate the container (`docker compose pull && docker compose up -d`).
+Your data (`/data`) is kept in the volume.
+
+**Build from source** instead of pulling: `git clone https://github.com/coldknife2/webauthnproxy && cd webauthnproxy && docker build -t webauthnproxy .`
+(then use `webauthnproxy` as the image name above).
+
+If `docker pull` answers `denied`, the package has not been made public yet: see [CONTRIBUTING.md](CONTRIBUTING.md#releasing-and-publishing-images).
 
 ## Operating modes
 

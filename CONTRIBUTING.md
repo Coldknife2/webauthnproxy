@@ -28,6 +28,25 @@ make image   # container image
 - No new dependency without a justification in the PR.
 - Clear commits in the imperative mood ("Add…", "Fix…"). One PR, one topic.
 
+## Releasing and publishing images
+
+Images are published by the `image` job of [`ci.yml`](.github/workflows/ci.yml), only after `test` and `e2e` pass:
+
+- every push to `main` publishes `ghcr.io/coldknife2/webauthnproxy` with the tags `latest`, `main` and `sha-<commit>`;
+- pushing a tag `vX.Y.Z` publishes `X.Y.Z`, `X.Y` and `X` (no `X` tag for `0.x`); `latest` always follows `main`;
+- images are built for `linux/amd64` and `linux/arm64` (cross-compiled, no emulation); pull requests build and smoke-test the image without pushing.
+
+One-time setup for maintainers:
+
+1. **Make the package public**: the first push creates a *private* package. In GitHub: profile or organization → *Packages* → `webauthnproxy` →
+   *Package settings* → *Change visibility* → Public. Otherwise `docker pull` answers `denied`.
+2. **Optional Docker Hub mirror**: add the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (an access token with write
+   permission). The same tags are then also pushed to `docker.io/<username>/webauthnproxy`. Without these secrets, only GHCR is used.
+3. Nothing else to configure: the job requests `packages: write` itself and logs in to GHCR with the built-in `GITHUB_TOKEN` (the image's
+   `org.opencontainers.image.source` label links the package to this repository).
+
+To release: update [CHANGELOG.md](CHANGELOG.md), then `git tag v1.0.0 && git push origin v1.0.0`.
+
 ## Translations
 
 Logs, errors and code are in English. The web pages are translated client-side: add a language by adding a dictionary to

@@ -16,7 +16,8 @@ services:
       - ./letsencrypt:/letsencrypt
 
   webauthnproxy:
-    build: .
+    image: ghcr.io/coldknife2/webauthnproxy:latest   # pin a version in production, e.g. :1.2.3
+    # build: .                                        # or build from source
     environment:
       MODE: forward
       LOGIN_URL: https://auth.example.com/_wap/login

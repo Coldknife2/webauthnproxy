@@ -18,7 +18,8 @@ services:
     image: nginx:alpine
 
   webauthnproxy:
-    build: .
+    image: ghcr.io/coldknife2/webauthnproxy:latest   # pin a version in production, e.g. :1.2.3
+    # build: .                                        # or build from source
     environment:
       UPSTREAM: http://mysite:80
       RP_ID: example.com                    # domaine (ou parent) du site

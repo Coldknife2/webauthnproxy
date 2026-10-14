@@ -17,6 +17,7 @@ ou derrière Traefik comme service `forwardAuth` pour protéger plusieurs sites.
 - [Fonctionnalités](#fonctionnalités)
 - [Comment ça marche](#comment-ça-marche)
 - [Démarrage rapide](#démarrage-rapide)
+- [Images de conteneur](#images-de-conteneur)
 - [Modes de fonctionnement](#modes-de-fonctionnement)
 - [Enrôlement des passkeys](#enrôlement-des-passkeys)
 - [Configuration](#configuration)
@@ -55,30 +56,97 @@ Le site protégé ne doit **pas** être joignable autrement que par le proxy (au
 
 ## Démarrage rapide
 
-Image locale (podman ou docker, les commandes sont identiques) :
+Vous allez protéger un site de démonstration par une connexion passkey. Le **site protégé** est ce que désigne `UPSTREAM` ; ici,
+[`traefik/whoami`](https://github.com/traefik/whoami), un petit site qui affiche les en-têtes qu'il reçoit : vous verrez ainsi l'en-tête
+`X-Authenticated-User` ajouté par webauthnproxy.
 
-```sh
-git clone https://github.com/coldknife2/webauthnproxy && cd webauthnproxy
-podman build -t webauthnproxy .
-
-mkdir -p data && podman unshare chown 65532:65532 data   # docker : sudo chown 65532 data
-podman run -d --name webauthnproxy \
-  -p 8080:8080 -p 127.0.0.1:8081:8081 -v ./data:/data:Z \
-  -e UPSTREAM=http://host.containers.internal:3000 \
-  -e RP_ID=localhost -e RP_ORIGINS=http://localhost:8080,http://localhost:8081 \
-  -e ENROLL_ENABLED=true \
-  webauthnproxy
-
-podman logs webauthnproxy        # affiche le jeton d'amorçage (« Enrollment bootstrap token: … »)
+```
+Navigateur ──► http://localhost:8080 ──► webauthnproxy ──► whoami:80
+                                         (login passkey)    (le site protégé : non publié, joignable uniquement via le proxy)
 ```
 
-1. Ouvrez <http://localhost:8081>, saisissez le **jeton d'amorçage** et un nom : créez la première passkey.
-2. Ouvrez <http://localhost:8080> : connexion par passkey, puis votre site s'affiche.
-3. Une fois les passkeys enrôlées, relancez le conteneur **sans** `ENROLL_ENABLED` pour fermer l'enrôlement.
+Les commandes sont données pour docker ; avec podman, remplacez `docker` par `podman`.
 
-En production : HTTPS obligatoire (WebAuthn l'exige hors `localhost`), `RP_ID` = votre domaine, `RP_ORIGINS` = l'URL publique du site.
-Exemples complets avec Traefik : [`docker-compose.example.yml`](docker-compose.example.yml) (mode proxy) et
-[`docker-compose.forwardauth.example.yml`](docker-compose.forwardauth.example.yml) (mode forwardAuth).
+**1. Démarrer le site à protéger** (pas de `-p` : il n'est *pas* joignable de l'extérieur)
+
+```sh
+docker network create wap
+docker run -d --name whoami --network wap docker.io/traefik/whoami
+```
+
+**2. Démarrer webauthnproxy devant ce site**
+
+```sh
+mkdir -p data && sudo chown 65532 data     # l'image tourne en uid 65532 ; podman rootless : podman unshare chown 65532:65532 data
+docker run -d --name webauthnproxy --network wap \
+  -p 8080:8080 -p 127.0.0.1:8081:8081 -v "$PWD/data:/data" \
+  -e UPSTREAM=http://whoami:80 \
+  -e RP_ID=localhost -e RP_ORIGINS=http://localhost:8080,http://localhost:8081 \
+  -e ENROLL_ENABLED=true \
+  ghcr.io/coldknife2/webauthnproxy:latest
+```
+
+`UPSTREAM` est le site protégé (`whoami` est résolu sur le réseau partagé `wap`). Le port `8080` est l'entrée protégée, `8081` la page d'enrôlement
+(accessible uniquement depuis la machine locale). Avec podman et SELinux, ajoutez `:Z` au volume. Voir [Images de conteneur](#images-de-conteneur).
+
+**3. Enrôler votre première passkey**
+
+```sh
+docker logs webauthnproxy      # cherchez : « Enrollment bootstrap token: … »
+```
+
+Ouvrez <http://localhost:8081>, collez le **jeton d'amorçage**, saisissez un nom (ex. `remi`) et créez la passkey (ajoutez `?lang=fr` à l'URL pour l'interface en français).
+
+**4. Utiliser le site protégé**
+
+Ouvrez <http://localhost:8080> : la passkey est demandée, puis la page de whoami s'affiche, avec `X-Authenticated-User: remi`.
+Sans la passkey, `whoami` n'est pas joignable.
+
+**5. Fermer l'enrôlement** une fois les passkeys créées : recréez le conteneur *sans* `-e ENROLL_ENABLED=true` (les données restent dans `./data`).
+
+**Protéger votre propre site** : mettez son URL dans `UPSTREAM` (toute adresse joignable depuis le conteneur : un autre conteneur du même réseau,
+`http://host.docker.internal:3000`, une adresse du LAN…). En production : HTTPS, `RP_ID` = votre domaine, `RP_ORIGINS` = l'URL publique, et Traefik devant :
+voir [`docker-compose.example.yml`](docker-compose.example.yml) (mode proxy) et
+[`docker-compose.forwardauth.example.yml`](docker-compose.forwardauth.example.yml) (un déploiement pour plusieurs sites).
+
+## Images de conteneur
+
+Les images sont construites et publiées par [GitHub Actions](.github/workflows/ci.yml) sur le GitHub Container Registry, pour `linux/amd64` et `linux/arm64`,
+uniquement si les tests passent :
+
+```sh
+docker pull ghcr.io/coldknife2/webauthnproxy:latest
+docker run --rm ghcr.io/coldknife2/webauthnproxy:latest --version
+```
+
+| Tag | Signification |
+|---|---|
+| `latest`, `main` | dernier commit de la branche `main` |
+| `sha-<commit>` | un commit précis |
+| `1.2.3`, `1.2`, `1` | versions (tag git `v1.2.3`) ; épinglez-en une en production |
+
+**Installer avec Docker Compose**
+
+```yaml
+services:
+  webauthnproxy:
+    image: ghcr.io/coldknife2/webauthnproxy:latest   # ou une version épinglée, ex. :1.2.3
+    restart: unless-stopped
+    environment:
+      UPSTREAM: http://monsite:80         # le site à protéger
+      RP_ID: example.com
+      RP_ORIGINS: https://app.example.com
+    volumes:
+      - ./data:/data                      # chown 65532 ./data au préalable
+```
+
+**Mettre à jour** : `docker pull ghcr.io/coldknife2/webauthnproxy:latest`, puis recréez le conteneur (`docker compose pull && docker compose up -d`).
+Les données (`/data`) sont conservées dans le volume.
+
+**Construire depuis les sources** plutôt que télécharger : `git clone https://github.com/coldknife2/webauthnproxy && cd webauthnproxy && docker build -t webauthnproxy .`
+(puis utilisez `webauthnproxy` comme nom d'image ci-dessus).
+
+Si `docker pull` répond `denied`, le paquet n'a pas encore été rendu public : voir [CONTRIBUTING.md](CONTRIBUTING.md#releasing-and-publishing-images).
 
 ## Modes de fonctionnement
 

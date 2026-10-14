@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -18,7 +19,15 @@ import (
 //go:embed web/*
 var webFS embed.FS
 
+// version is set at build time (-ldflags "-X main.version=...").
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Println("webauthnproxy", version)
+		return
+	}
+	log.Printf("webauthnproxy %s", version)
 	cfg, err := LoadConfig()
 	if err != nil {
 		log.Fatalf("configuration: %v", err)

@@ -5,24 +5,23 @@
 webauthnproxy is built to stay out of the way: a single static Go binary, no database server, no password hashing, stateless cookies.
 Measured in the same conditions against [Authelia](https://www.authelia.com/) and [Pocket ID](https://github.com/pocket-id/pocket-id) + [Tinyauth](https://github.com/tinyauthapp/tinyauth):
 
-| | webauthnproxy | Authelia v4.39.28 | Pocket ID v2.18 + Tinyauth v5 |
+| | webauthnproxy | Authelia v4.39.28 | Pocket ID v2.18 + Tinyauth v5.2 |
 |---|---|---|---|
-| Image size | **12 MiB** | 77 MiB | 190 MiB (84 + 106)³ |
-| Start to first answer (container creation included) | 0.36 s | 0.80 s | 0.46 s (Tinyauth) + 0.78 s (Pocket ID) |
-| Idle memory (RSS, 45 s after start) | **9 MiB** (2 MiB anonymous) | 161 MiB (119 MiB anonymous)¹ | 109 MiB (24 MiB anonymous): 61 + 57 |
+| Image size | **12 MiB** | 77 MiB | 128 MiB (84 + 44) |
+| Start to first answer (container creation included) | 0.37 s | 0.96 s | 0.39 s (Tinyauth) + 0.73 s (Pocket ID) |
+| Idle memory (RSS, 45 s after start) | **8 MiB** (2 MiB anonymous) | 163 MiB (121 MiB anonymous)¹ | 90 MiB (22 MiB anonymous): 58 + 40 |
 | Idle CPU | **0.00 %** | 0.05 % | 0.10 % |
-| Authenticated check, 4 connections | **14,067 req/s**, p99 0.91 ms | 10,819 req/s, p99 1.27 ms | 4,026 req/s, p99 2.4 ms |
-| … server CPU per 1000 requests | **100 ms** | 141 ms | 388 ms |
-| Authenticated check, 32 connections | **36,229 req/s**, p99 4.7 ms | 20,431 req/s, p99 7.9 ms | 4,298 req/s, p99 23.6 ms |
-| … server CPU per 1000 requests | **45 ms** | 94 ms | 365 ms |
-| Peak memory during the run | **16 MiB** | 258 MiB² | 119 MiB |
+| Authenticated check, 4 connections | **14,344 req/s**, p99 0.91 ms | 11,218 req/s, p99 1.29 ms | 3,798 req/s, p99 2.6 ms |
+| … server CPU per 1000 requests | **98 ms** | 135 ms | 414 ms |
+| Authenticated check, 32 connections | **34,829 req/s**, p99 4.8 ms | 20,388 req/s, p99 8.1 ms | 3,820 req/s, p99 27.2 ms |
+| … server CPU per 1000 requests | **46 ms** | 92 ms | 408 ms |
+| Peak memory during the run | **15 MiB** | 208 MiB² | 98 MiB |
 
-¹ After one login and 45 s of idle. The Go runtime later returns part of it: 92 MiB once the load test had finished.
-² Reached at the password login (Authelia hashes with Argon2id, 64 MiB per hash by default). webauthnproxy has no password to hash.
-³ Pocket ID from Docker Hub, Tinyauth built from its own Dockerfile (see below), so its figure is the binary (which embeds its web UI and SQLite) plus a small base image.
+¹ After one login and 45 s of idle. The Go runtime later returns part of it: about 90 MiB once the load test had finished.
+² Reached at the password login (Authelia hashes with Argon2id, 64 MiB per hash by default); 208 to 258 MiB across runs. webauthnproxy has no password to hash.
 
-**Reading the numbers.** Memory is the big difference: about 12× less than Pocket ID + Tinyauth and 18× less than Authelia at idle, 7× to 16× less at peak. Image size is 6× to 16× smaller.
-Per-request CPU is 1.4× to 2× lower than Authelia and 4× to 8× lower than Tinyauth, whose forward-auth endpoint is the slowest of the three here.
+**Reading the numbers.** Memory is the big difference: about 11× less than Pocket ID + Tinyauth and 20× less than Authelia at idle, 6× to 14× less at peak. Images are 6× to 11× smaller.
+Per-request CPU is 1.4× to 2× lower than Authelia and 4× to 9× lower than Tinyauth, whose forward-auth endpoint is the slowest of the three here.
 
 ## Method
 
@@ -37,6 +36,7 @@ make bench          # ~6 minutes; prints the table above for your machine (needs
 make bench-go       # Go micro-benchmarks of the hot path
 ```
 
+Official images: `docker.io/authelia/authelia:latest` (v4.39.28), `docker.io/pocketid/pocket-id:v2`, `ghcr.io/tinyauthapp/tinyauth:v5` (v5.2.0).
 Measured on a 4-vCPU Intel Xeon 2.8 GHz VM (Linux 6.18, podman 4.9.3, Go 1.26), with the load generator on the same machine.
 Absolute numbers will differ on your hardware; the ratios are what matter.
 
@@ -48,8 +48,6 @@ Absolute numbers will differ on your hardware; the ratios are what matter.
 - **Login is not compared.** A passkey login (public-key signature check) and a password login (Argon2id, bcrypt) are different operations.
 - **Quietest settings for everyone.** Authelia ran at log level `warn`; Tinyauth with `TINYAUTH_LOG_LEVEL=warn` and its HTTP request log off
   (at its defaults it logs every request and handled about 30 % fewer checks per second). Nothing else was tuned (for example no `GOMEMLIMIT`).
-- **Tinyauth image.** `ghcr.io` was not reachable from the environment used for the measurement, so Tinyauth was built from its own `Dockerfile` (same build steps, local base images; the official image adds an Alpine base of a few MiB).
-  Memory and CPU are those of the same code.
 - **Pocket ID** was measured idle and unconfigured (no admin account created), with its analytics heartbeat disabled (`ANALYTICS_DISABLED=true`); a configured instance with users will use somewhat more.
 - **One noisy VM.** Run `make bench` yourself before relying on a number.
 - **Other products** (Authentik, Keycloak) were not measured. One comparison reports that

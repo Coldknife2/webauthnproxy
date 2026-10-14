@@ -40,11 +40,11 @@ Podman : remplacez `docker` par `podman` ; rootless : `podman unshare chown 6553
 
 | | webauthnproxy | Authelia | Pocket ID + Tinyauth |
 |---|---|---|---|
-| Mémoire au repos | **9 Mio** | 161 Mio | 109 Mio |
+| Mémoire au repos | **8 Mio** | 163 Mio | 90 Mio |
 | CPU au repos | **0 %** | 0,05 % | 0,10 % |
-| Image | **12 Mio** | 77 Mio | 190 Mio |
-| Vérifications, 32 connexions | **36k req/s** | 20k req/s | 4,3k req/s |
-| Mémoire max sous charge | **16 Mio** | 258 Mio | 119 Mio |
+| Image | **12 Mio** | 77 Mio | 128 Mio |
+| Vérifications, 32 connexions | **35k req/s** | 20k req/s | 3,8k req/s |
+| Mémoire max sous charge | **15 Mio** | 208 Mio | 98 Mio |
 
 Même machine, même charge, vérification forward-auth authentifiée. Ils font plus que nous (section suivante). Méthode et limites : [docs/performance.md](docs/performance.md) (en anglais).
 
@@ -129,15 +129,18 @@ utilisateurs et groupes, OIDC pour vos applis, règles d'accès par site, interf
 webauthnproxy est un portail. Il répond à une seule question, *« ce visiteur possède-t-il une passkey enregistrée ? »*, pour un ou plusieurs sites.
 Si vous avez besoin du premier, utilisez-les. Si vous n'avez besoin que du second, inutile de faire tourner deux ou trois services et une base de données.
 
-Ce que disent les sources (code et README lus le 14/10/2026) :
+Ce que dit la documentation officielle (lue le 14/10/2026) :
 
 - **Traefik** n'a [aucun plugin passkey](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396).
-- **[Pocket ID](https://github.com/pocket-id/pocket-id)** : fournisseur OIDC qui n'accepte que les passkeys. Il n'expose pas de point forward-auth :
-  pour protéger une appli sans OIDC, on met un proxy devant, comme [Tinyauth](https://github.com/tinyauthapp/tinyauth) ou OAuth2 Proxy ([son guide](https://pocket-id.org/docs/guides/proxy-services)).
-- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)** : forward-auth avec utilisateurs locaux, LDAP et OAuth/OIDC. Son code ne gère ni passkey ni WebAuthn.
-  Il pose un seul domaine de cookie, dérivé de sa propre URL, et refuse les applis hors de ce domaine (`domain does not match cookie domain`).
-- **[Authelia](https://www.authelia.com/overview/authentication/security-key/)** : connexion par passkey depuis la v4.39, mais une passkey compte pour un seul facteur et un mot de passe peut rester demandé
-  pour les politiques `two_factor`. Chaque domaine de cookie exige son propre `authelia_url` dans ce domaine : des domaines sans rapport donnent des portails et des connexions séparés.
+- **[Pocket ID](https://github.com/pocket-id/pocket-id)** n'accepte que les passkeys et « ne fournit que OpenID Connect, donc ne peut pas protéger seul une appli sans OIDC » :
+  on met devant un proxy d'authentification, comme Tinyauth, caddy-security ou OAuth2 Proxy ([guide](https://pocket-id.org/docs/guides/proxy-services)).
+- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)** est ce proxy : forward-auth avec [utilisateur/mot de passe (+ TOTP), LDAP et OpenID Connect](https://tinyauth.app/docs/reference/authentication/) ;
+  il n'a pas de passkey en propre et documente [Pocket ID comme moyen d'en avoir](https://tinyauth.app/docs/guides/pocket-id/).
+  Il pose son cookie « pour le domaine parent de l'URL de l'application », ses applis étant des sous-domaines ([configuration du domaine](https://tinyauth.app/docs/getting-started/)) ;
+  son code refuse les applis hors de ce domaine (`domain does not match cookie domain`).
+- **[Authelia](https://www.authelia.com/overview/authentication/security-key/)** propose la connexion par passkey sans mot de passe depuis la v4.39, mais « la passkey est un seul facteur » : un mot de passe peut rester demandé
+  pour appliquer une politique `two_factor` (une option expérimentale permet à une passkey avec vérification utilisateur de la satisfaire). Chaque [domaine de cookie](https://www.authelia.com/configuration/session/introduction/) est associé
+  à un `authelia_url` situé dans ce domaine : des domaines sans rapport donnent des portails et des connexions séparés.
 
 | | webauthnproxy | Pocket ID + Tinyauth | Authelia |
 |---|---|---|---|
@@ -145,7 +148,7 @@ Ce que disent les sources (code et README lus le 14/10/2026) :
 | Un login pour des **domaines sans rapport** | ✅ échange de ticket | ❌ un seul domaine de cookie | un portail et une connexion par domaine |
 | Proxy intégré (ni Traefik, Caddy, Nginx) | ✅ | ❌ | ❌ |
 | SSO OIDC pour d'autres applis | ❌ | ✅ | ✅ |
-| Règles par site, groupes, plusieurs admins | ❌ | partiel | ✅ |
+| Règles par site, groupes, plusieurs admins | ❌ | ✅ basique (règles par appli Tinyauth, groupes Pocket ID) | ✅ |
 | Maturité | nouveau, non audité | élevée | élevée |
 
 **Choisissez-les** pour de l'OIDC, des groupes, des règles par site, plusieurs administrateurs, ou un logiciel très utilisé et audité.

@@ -38,11 +38,11 @@ Podman: swap `docker` for `podman`; rootless: `podman unshare chown 65532:65532 
 
 | | webauthnproxy | Authelia | Pocket ID + Tinyauth |
 |---|---|---|---|
-| Idle memory | **9 MiB** | 161 MiB | 109 MiB |
+| Idle memory | **8 MiB** | 163 MiB | 90 MiB |
 | Idle CPU | **0 %** | 0.05 % | 0.10 % |
-| Image | **12 MiB** | 77 MiB | 190 MiB |
-| Auth checks, 32 connections | **36k req/s** | 20k req/s | 4.3k req/s |
-| Peak memory under load | **16 MiB** | 258 MiB | 119 MiB |
+| Image | **12 MiB** | 77 MiB | 128 MiB |
+| Auth checks, 32 connections | **35k req/s** | 20k req/s | 3.8k req/s |
+| Peak memory under load | **15 MiB** | 208 MiB | 98 MiB |
 
 Same machine, same load, authenticated forward-auth check. They do more than we do (next section). Method and caveats: [docs/performance.md](docs/performance.md).
 
@@ -127,15 +127,18 @@ users and groups, OIDC for your apps, access rules per site, admin interfaces, m
 webauthnproxy is a gate. It answers one question, *"does this visitor hold a registered passkey?"*, for one or many sites.
 If you need the former, use them. If you only need the latter, you should not have to run two or three services and a database for it.
 
-What the sources say (code and READMEs read on 2026-10-14):
+What the official documentation says (read on 2026-10-14):
 
 - **Traefik** has [no passkey plugin](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396).
-- **[Pocket ID](https://github.com/pocket-id/pocket-id)**: an OIDC provider that supports passkeys only. It exposes no forward-auth endpoint of its own:
-  to protect an app that does not speak OIDC you put a proxy in front, such as [Tinyauth](https://github.com/tinyauthapp/tinyauth) or OAuth2 Proxy ([its guide](https://pocket-id.org/docs/guides/proxy-services)).
-- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)**: forward-auth with local users, LDAP and OAuth/OIDC. Its source has no passkey or WebAuthn support.
-  It sets one cookie domain, derived from its own URL, and refuses apps outside it (`domain does not match cookie domain`).
-- **[Authelia](https://www.authelia.com/overview/authentication/security-key/)**: passkey login since v4.39, but a passkey counts as one factor and a password may still be asked
-  for `two_factor` policies. Each cookie domain needs its own `authelia_url` inside that domain, so unrelated domains mean separate portals and separate sign-ins.
+- **[Pocket ID](https://github.com/pocket-id/pocket-id)** supports passkeys only, and "only provides OpenID Connect, so it can't protect an app that has no OIDC support by itself":
+  you put an authentication proxy in front, such as Tinyauth, caddy-security or OAuth2 Proxy ([guide](https://pocket-id.org/docs/guides/proxy-services)).
+- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)** is that proxy: forward-auth with [username/password (+ TOTP), LDAP and OpenID Connect](https://tinyauth.app/docs/reference/authentication/);
+  it has no passkey support of its own and documents [Pocket ID as the way to get passkeys](https://tinyauth.app/docs/guides/pocket-id/).
+  It sets its cookie "for the parent domain of the application URL" so that its apps are subdomains of it ([domain configuration](https://tinyauth.app/docs/getting-started/));
+  its code refuses apps outside that domain (`domain does not match cookie domain`).
+- **[Authelia](https://www.authelia.com/overview/authentication/security-key/)** has passwordless passkey login since v4.39, but "the Passkey itself is a single factor": it may still ask for a password to enforce a `two_factor` policy
+  (an experimental option lets a user-verified passkey satisfy it). Each [session cookie domain](https://www.authelia.com/configuration/session/introduction/) is paired with an `authelia_url` inside that domain,
+  so unrelated domains mean separate portals and separate sign-ins.
 
 | | webauthnproxy | Pocket ID + Tinyauth | Authelia |
 |---|---|---|---|
@@ -143,7 +146,7 @@ What the sources say (code and READMEs read on 2026-10-14):
 | One login for **unrelated domains** | ✅ ticket exchange | ❌ one cookie domain | one portal and sign-in per domain |
 | Built-in proxy (no Traefik/Caddy/Nginx needed) | ✅ | ❌ | ❌ |
 | OIDC SSO for other apps | ❌ | ✅ | ✅ |
-| Per-site rules, groups, several admins | ❌ | partial | ✅ |
+| Per-site rules, groups, several admins | ❌ | ✅ basic (Tinyauth per-app rules, Pocket ID groups) | ✅ |
 | Maturity | new, unaudited | high | high |
 
 **Choose them** for OIDC, groups, per-site rules, several administrators, or software that is widely used and audited.

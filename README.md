@@ -34,6 +34,18 @@ docker logs webauthnproxy        # copy "Enrollment bootstrap token: …"
 `UPSTREAM` is the site you protect. Use your own: any URL the container can reach.
 Podman: swap `docker` for `podman`; rootless: `podman unshare chown 65532:65532 data`.
 
+## Light
+
+| | webauthnproxy | Authelia |
+|---|---|---|
+| Idle memory | **9 MiB** | 159 MiB |
+| Idle CPU | **0 %** | 0.05 % |
+| Image | **12 MiB** | 77 MiB |
+| Auth checks (32 connections) | **32k req/s** | 19k req/s |
+| Peak memory under load | **16 MiB** | 242 MiB |
+
+Same machine, same load, authenticated forward-auth check. Method, caveats, how to reproduce: [docs/performance.md](docs/performance.md).
+
 ## Install
 
 ```yaml
@@ -123,6 +135,7 @@ Need: passkey-only login in front of self-hosted sites, with nothing else to run
 | Built-in proxy (no Traefik/Caddy/Nginx needed) | ✅ | ❌ | ❌ |
 | OIDC SSO for other apps | ❌ | ✅ | ✅ |
 | Per-site rules, groups | ❌ | partial | ✅ |
+| Idle memory | **9 MiB** | not measured | 159 MiB |
 | Maturity | new, unaudited | high | high |
 
 \*per a third-party report, not confirmed in Authelia's docs.
@@ -138,6 +151,7 @@ make check   # gofmt, vet, tests (race)
 make e2e     # Chromium + virtual passkey; Traefik in a container
 make build   # ./webauthnproxy
 make image   # container image
+make bench   # footprint vs Authelia
 ```
 
 CI ([`ci.yml`](.github/workflows/ci.yml)) tests, then builds and pushes the image to `ghcr.io` on `main` and `v*` tags.

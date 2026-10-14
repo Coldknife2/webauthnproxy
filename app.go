@@ -121,16 +121,18 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 		proto = "http"
 	}
 	uri := r.Header.Get("X-Forwarded-Uri")
-	if p, err := url.Parse(uri); err == nil {
-		switch p.Path {
-		case prefix + "/callback": // the login host sent the user back with a ticket
-			a.callback(w, r, host, p.Query())
-			return
-		case prefix + "/logout": // sign out of this site
-			http.SetCookie(w, a.hostCookie(r, "", -1))
-			http.SetCookie(w, a.cookie(r, "", -1))
-			http.Redirect(w, r, a.cfg.LoginURL.String(), http.StatusFound)
-			return
+	if strings.HasPrefix(uri, prefix+"/") { // control paths only; ordinary requests skip URL parsing
+		if p, err := url.Parse(uri); err == nil {
+			switch p.Path {
+			case prefix + "/callback": // the login host sent the user back with a ticket
+				a.callback(w, r, host, p.Query())
+				return
+			case prefix + "/logout": // sign out of this site
+				http.SetCookie(w, a.hostCookie(r, "", -1))
+				http.SetCookie(w, a.cookie(r, "", -1))
+				http.Redirect(w, r, a.cfg.LoginURL.String(), http.StatusFound)
+				return
+			}
 		}
 	}
 	// A cookie is valid for this site if it was issued for this very host, or if it is the shared
@@ -151,7 +153,7 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 // callback exchanges a ticket for a host-only session cookie, then sends the user to the page they asked for.
 func (a *App) callback(w http.ResponseWriter, r *http.Request, host string, q url.Values) {
 	user, aud, nonce, exp, err := a.sessions.VerifyTicket(q.Get("ticket"))
-	if err != nil || aud != host || a.store.ByName(user) == nil || !a.seen.Mark(nonce, exp) {
+	if err != nil || aud != host || !a.store.Exists(user) || !a.seen.Mark(nonce, exp) {
 		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
 		return
 	}
@@ -242,7 +244,7 @@ func (a *App) session(r *http.Request) (name, aud string, ok bool) {
 		return "", "", false
 	}
 	name, aud, err = a.sessions.Verify(c.Value)
-	if err != nil || a.store.ByName(name) == nil { // deleted user => invalid session
+	if err != nil || !a.store.Exists(name) { // deleted user => invalid session
 		return "", "", false
 	}
 	return name, aud, true

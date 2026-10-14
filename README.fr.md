@@ -36,6 +36,18 @@ docker logs webauthnproxy        # copiez « Enrollment bootstrap token: … »
 `UPSTREAM` est le site protégé. Mettez le vôtre : toute URL joignable depuis le conteneur.
 Podman : remplacez `docker` par `podman` ; rootless : `podman unshare chown 65532:65532 data`.
 
+## Léger
+
+| | webauthnproxy | Authelia |
+|---|---|---|
+| Mémoire au repos | **9 Mio** | 159 Mio |
+| CPU au repos | **0 %** | 0,05 % |
+| Image | **12 Mio** | 77 Mio |
+| Vérifications (32 connexions) | **32k req/s** | 19k req/s |
+| Mémoire max sous charge | **16 Mio** | 242 Mio |
+
+Même machine, même charge, vérification forward-auth authentifiée. Méthode, limites, reproduction : [docs/performance.md](docs/performance.md) (en anglais).
+
 ## Installation
 
 ```yaml
@@ -125,6 +137,7 @@ Besoin : connexion par passkey seule devant des sites auto-hébergés, sans rien
 | Proxy intégré (ni Traefik, Caddy, Nginx) | ✅ | ❌ | ❌ |
 | SSO OIDC pour d'autres applis | ❌ | ✅ | ✅ |
 | Règles par site, groupes | ❌ | partiel | ✅ |
+| Mémoire au repos | **9 Mio** | non mesurée | 159 Mio |
 | Maturité | nouveau, non audité | élevée | élevée |
 
 \*selon un témoignage tiers, non confirmé dans la doc d'Authelia.
@@ -140,6 +153,7 @@ make check   # gofmt, vet, tests (race)
 make e2e     # Chromium + passkey virtuelle ; Traefik en conteneur
 make build   # ./webauthnproxy
 make image   # image de conteneur
+make bench   # empreinte mémoire/CPU vs Authelia
 ```
 
 La CI ([`ci.yml`](.github/workflows/ci.yml)) teste, puis construit et pousse l'image sur `ghcr.io` pour `main` et les tags `v*`.

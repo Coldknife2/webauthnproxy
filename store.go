@@ -94,6 +94,18 @@ func (s *Store) ByName(name string) *User {
 	return nil
 }
 
+// Exists reports whether a user with this name exists, without copying it (hot path).
+func (s *Store) Exists(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, u := range s.Users {
+		if u.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) ByID(id []byte) *User {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

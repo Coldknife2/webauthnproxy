@@ -43,7 +43,7 @@ func TestSafeNextAllowedHosts(t *testing.T) {
 	}
 }
 
-func forwardApp(t *testing.T) *App {
+func forwardApp(t testing.TB) *App {
 	t.Helper()
 	a := testApp(t)
 	lu, _ := url.Parse("https://auth.com/_wap/login")

@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"hash"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +24,7 @@ const cookieName = "wap_session"
 type Sessions struct {
 	secret []byte
 	ttl    time.Duration
+	pool   sync.Pool // reusable HMAC hashers
 }
 
 // ticketTTL is how long a login ticket stays valid; it is also single-use.
@@ -46,9 +49,23 @@ var b64 = base64.RawURLEncoding
 
 // sign separates the token kinds ("s" session, "t" ticket) so one can never be used as the other.
 func (s *Sessions) sign(kind, payload string) string {
-	m := hmac.New(sha256.New, s.secret)
-	m.Write([]byte(kind + "|" + payload))
-	return b64.EncodeToString(m.Sum(nil))
+	var sum [sha256.Size]byte
+	return b64.EncodeToString(s.mac(kind, payload, sum[:0]))
+}
+
+// mac computes HMAC-SHA256(kind|payload) with a pooled hasher, appending the sum to dst.
+func (s *Sessions) mac(kind, payload string, dst []byte) []byte {
+	m, _ := s.pool.Get().(hash.Hash)
+	if m == nil {
+		m = hmac.New(sha256.New, s.secret)
+	}
+	m.Reset()
+	io.WriteString(m, kind)
+	io.WriteString(m, "|")
+	io.WriteString(m, payload)
+	dst = m.Sum(dst)
+	s.pool.Put(m)
+	return dst
 }
 
 func (s *Sessions) token(kind, user, aud string, ttl time.Duration, extra ...string) string {
@@ -60,19 +77,25 @@ func (s *Sessions) token(kind, user, aud string, ttl time.Duration, extra ...str
 
 // parse checks the signature and expiry and returns the payload fields.
 func (s *Sessions) parse(kind, v string, fields int) ([]string, time.Time, error) {
-	parts := strings.Split(v, ".")
-	if len(parts) != fields+1 {
+	i := strings.LastIndexByte(v, '.')
+	if i < 0 {
 		return nil, time.Time{}, errors.New("format")
 	}
-	payload := strings.Join(parts[:fields], ".")
-	if !hmac.Equal([]byte(parts[fields]), []byte(s.sign(kind, payload))) {
+	payload, sig := v[:i], v[i+1:]
+	var sum [sha256.Size]byte
+	got, err := b64.DecodeString(sig)
+	if err != nil || !hmac.Equal(got, s.mac(kind, payload, sum[:0])) {
 		return nil, time.Time{}, errors.New("signature")
+	}
+	parts := strings.Split(payload, ".")
+	if len(parts) != fields {
+		return nil, time.Time{}, errors.New("format")
 	}
 	exp, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil || time.Now().Unix() > exp {
 		return nil, time.Time{}, errors.New("expired")
 	}
-	return parts[:fields], time.Unix(exp, 0), nil
+	return parts, time.Unix(exp, 0), nil
 }
 
 func decode(seg string) (string, error) {

@@ -10,7 +10,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 )
 
-func testApp(t *testing.T) *App {
+func testApp(t testing.TB) *App {
 	t.Helper()
 	store, err := OpenStore(t.TempDir())
 	if err != nil {
@@ -54,7 +54,7 @@ func TestEnrollBootstrap(t *testing.T) {
 	}
 }
 
-func addUser(t *testing.T, a *App) string {
+func addUser(t testing.TB, a *App) string {
 	t.Helper()
 	u := a.store.GetOrNew("remi")
 	if err := a.store.AddCredential(u, &webauthn.Credential{ID: []byte("c1")}); err != nil {

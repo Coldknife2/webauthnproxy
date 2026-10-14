@@ -12,10 +12,10 @@ import base64, hashlib, json, os, shutil, sys, time, urllib.request
 
 os.environ.setdefault("BENCH_SETTLE", "20")
 import bench
-from bench import RT, SECRET, TMP, HERE, cpu_s, image_mib, load, mem, pid_of, sh, wait_http, wap_cookie
+from bench import RT, TOKEN, TMP, HERE, cpu_s, image_mib, load, mem, pid_of, seed_sessions, sh, wait_http
 
 NAME = "lang-bench"
-COOKIE = "wap_session=" + wap_cookie("bench", "app.example.com")
+COOKIE = "wap_session=" + TOKEN
 HEADERS = ["Host: app.example.com", "X-Forwarded-Host: app.example.com", "X-Forwarded-Uri: /", "Cookie: " + COOKIE]
 URL = "http://127.0.0.1:18090/_wap/verify"
 
@@ -24,7 +24,7 @@ def targets(data):
     return [
         ("Go (minimal handler)", "lang-go", []),
         ("Go (webauthnproxy, full app)", bench.WAP, ["-v", f"{data}:/data", "-e", "MODE=forward", "-e", "LOGIN_URL=https://auth.example.com/_wap/login",
-            "-e", "ALLOWED_HOSTS=app.example.com", "-e", "TRUSTED_PROXIES=0.0.0.0/0", "-e", "RP_ID=example.com", "-e", "RP_ORIGINS=https://auth.example.com", "-e", f"SESSION_SECRET={SECRET}"]),
+            "-e", "ALLOWED_HOSTS=app.example.com", "-e", "TRUSTED_PROXIES=0.0.0.0/0", "-e", "RP_ID=example.com", "-e", "RP_ORIGINS=https://auth.example.com"] ),
         ("Rust (axum)", "lang-rust", []),
         ("Node 22", "lang-node", []),
         ("Python 3.13 (uvicorn)", "lang-python", []),
@@ -65,6 +65,7 @@ def main():
     json.dump({"users": [{"id": base64.b64encode(uid).decode(), "name": "bench", "credentials": [{"id": "AQID", "publicKey": "AQID"}]}]},
               open(f"{data}/users.json", "w"))
     os.chown(data, 65532, 65532); os.chown(f"{data}/users.json", 65532, 65532)
+    seed_sessions(data)
     res = {}
     try:
         for label, image, args in targets(data):

@@ -1,24 +1,20 @@
 const http = require("http");
 const crypto = require("crypto");
-const secret = Buffer.from("bench-secret-0123456789abcdef0123456789");
+const sha = (s) => crypto.createHash("sha256").update(s).digest("base64url");
+
+// Same algorithm as the application: SHA-256 of the cookie value, lookup in a table of sessions (one entry, seeded at
+// start), audience and expiry checks, user lookup.
+const table = new Map([[sha("benchAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), { user: "bench", aud: "app.example.com", exp: Date.now() / 1000 + 86400 }]]);
 const users = new Set(["bench"]);
-const b64 = (s) => Buffer.from(s, "base64url").toString();
 
 function check(h) {
   const host = (h["x-forwarded-host"] || "").toLowerCase();
   if (host !== "app.example.com") return null;
   const m = /(?:^|;\s*)wap_session=([^;]+)/.exec(h.cookie || "");
   if (!m) return null;
-  const tok = m[1], i = tok.lastIndexOf(".");
-  if (i < 0) return null;
-  const payload = tok.slice(0, i);
-  const want = crypto.createHmac("sha256", secret).update("s|" + payload).digest();
-  const got = Buffer.from(tok.slice(i + 1), "base64url");
-  if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) return null;
-  const f = payload.split(".");
-  if (f.length !== 5 || Number(f[2]) < Date.now() / 1000 || b64(f[1]) !== host) return null;
-  const user = b64(f[0]);
-  return users.has(user) ? user : null;
+  const s = table.get(sha(m[1]));
+  if (!s || s.aud !== host || s.exp < Date.now() / 1000) return null;
+  return users.has(s.user) ? s.user : null;
 }
 
 http.createServer((req, res) => {

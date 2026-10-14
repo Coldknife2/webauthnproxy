@@ -4,6 +4,8 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"html"
 	"io/fs"
 	"net/http"
 	"net/http/httputil"
@@ -63,11 +65,74 @@ func (a *App) publicHandler() http.Handler {
 	mux.HandleFunc("POST "+prefix+"/login/begin", a.loginBegin)
 	mux.HandleFunc("POST "+prefix+"/login/finish", a.loginFinish)
 	mux.HandleFunc("POST "+prefix+"/logout", func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true})
+		http.SetCookie(w, a.cookie(r, "", -1))
 		http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
 	})
-	mux.Handle("/", a.requireAuth(a.reverseProxy()))
+	if a.cfg.Mode == "forward" {
+		mux.HandleFunc(prefix+"/verify", a.verify)
+		mux.HandleFunc("GET /{$}", a.home)
+	} else {
+		mux.Handle("/", a.requireAuth(a.reverseProxy()))
+	}
 	return mux
+}
+
+func (a *App) cookie(r *http.Request, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name: cookieName, Value: value, Path: "/", Domain: a.cfg.CookieDomain,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: maxAge,
+		Secure: isSecure(r) || (a.cfg.LoginURL != nil && a.cfg.LoginURL.Scheme == "https"),
+	}
+}
+
+// verify est l'endpoint forwardAuth de Traefik : 2xx = autorisé, sinon la réponse est renvoyée au client.
+func (a *App) verify(w http.ResponseWriter, r *http.Request) {
+	name, ok := a.currentUser(r)
+	if ok {
+		w.Header().Set(a.cfg.UserHeader, name)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	method := r.Header.Get("X-Forwarded-Method")
+	if (method == "" || method == http.MethodGet) && strings.Contains(r.Header.Get("Accept"), "text/html") {
+		orig := r.Header.Get("X-Forwarded-Proto") + "://" + r.Header.Get("X-Forwarded-Host") + r.Header.Get("X-Forwarded-Uri")
+		http.Redirect(w, r, a.cfg.LoginURL.String()+"?next="+url.QueryEscape(orig), http.StatusFound)
+		return
+	}
+	http.Error(w, "authentification requise", http.StatusUnauthorized)
+}
+
+// home : page de l'hôte d'authentification en mode forward.
+func (a *App) home(w http.ResponseWriter, r *http.Request) {
+	name, ok := a.currentUser(r)
+	if !ok {
+		http.Redirect(w, r, prefix+"/login", http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Session</title><body style="font-family:system-ui;text-align:center;margin-top:20vh"><p>Connecté en tant que <b>%s</b></p><form method=post action="%s/logout"><button>Se déconnecter</button></form>`, html.EscapeString(name), prefix)
+}
+
+// safeNext n'autorise que les chemins locaux et, en mode forward, les URLs du domaine du cookie.
+func (a *App) safeNext(next string) string {
+	if next == "" {
+		return "/"
+	}
+	if strings.HasPrefix(next, "/") {
+		if strings.HasPrefix(next, "//") || strings.HasPrefix(next, `/\`) {
+			return "/"
+		}
+		return next
+	}
+	u, err := url.Parse(next)
+	if err != nil || a.cfg.Mode != "forward" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "/"
+	}
+	h := strings.ToLower(u.Hostname())
+	if h == a.cfg.CookieDomain || strings.HasSuffix(h, "."+a.cfg.CookieDomain) {
+		return next
+	}
+	return "/"
 }
 
 func (a *App) currentUser(r *http.Request) (string, bool) {
@@ -158,12 +223,8 @@ func (a *App) loginFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	u := user.(*User)
 	_ = a.store.UpdateCredential(u.ID, cred)
-	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: a.sessions.New(u.Name), Path: "/",
-		HttpOnly: true, Secure: isSecure(r), SameSite: http.SameSiteLaxMode,
-		MaxAge: int(a.cfg.SessionTTL.Seconds()),
-	})
-	writeJSON(w, 200, map[string]string{"ok": "true"})
+	http.SetCookie(w, a.cookie(r, a.sessions.New(u.Name), int(a.cfg.SessionTTL.Seconds())))
+	writeJSON(w, 200, map[string]string{"next": a.safeNext(r.URL.Query().Get("next"))})
 }
 
 // ---------------------------------------------------------------- enrôlement (privé)

@@ -71,7 +71,11 @@ func main() {
 			}
 		}()
 	}
-	log.Printf("proxy -> %s (%d utilisateur(s) enregistré(s))", cfg.Upstream, store.Count())
+	if cfg.Mode == "forward" {
+		log.Printf("forwardAuth: GET %s/_wap/verify (%d utilisateur(s) enregistré(s))", cfg.Listen, store.Count())
+	} else {
+		log.Printf("proxy -> %s (%d utilisateur(s) enregistré(s))", cfg.Upstream, store.Count())
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

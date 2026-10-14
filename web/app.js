@@ -38,11 +38,11 @@ async function registerPasskey(apiBase, name) {
   await api(apiBase + "/register/finish?cid=" + encodeURIComponent(cid), "POST", credToJSON(cred));
 }
 
-async function loginWithPasskey() {
+async function loginWithPasskey(next) {
   const { cid, options } = await api(P + "/login/begin", "POST");
   const pk = options.publicKey;
   pk.challenge = dec(pk.challenge);
   (pk.allowCredentials || []).forEach((c) => (c.id = dec(c.id)));
   const cred = await navigator.credentials.get({ publicKey: pk });
-  await api(P + "/login/finish?cid=" + encodeURIComponent(cid), "POST", credToJSON(cred));
+  return api(P + "/login/finish?cid=" + encodeURIComponent(cid) + "&next=" + encodeURIComponent(next || ""), "POST", credToJSON(cred));
 }

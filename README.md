@@ -15,6 +15,28 @@ Le site web ne doit **pas** être joignable autrement que par le proxy (pas de p
   (toute valeur envoyée par le client est écrasée). Le cookie de session n'est pas transmis à l'upstream.
 - Connexion « sans nom d'utilisateur » (passkey discoverable), vérification utilisateur (PIN/biométrie) exigée.
 
+## Mode forwardAuth (Traefik) — `MODE=forward`
+
+Au lieu de faire transiter le trafic, le service ne fait que **vérifier** : Traefik appelle
+`/_wap/verify` pour chaque requête et laisse passer (2xx) ou renvoie la réponse du service
+(redirection vers la page de login pour un navigateur, `401` sinon). Un seul déploiement protège
+autant de sites que l'on veut en ajoutant le middleware (`...middlewares=passkey`).
+
+```
+Utilisateur ──► Traefik ──(forwardAuth: /_wap/verify)──► webauthnproxy
+                  └──────────────────────────────────────► site web
+Login : https://auth.example.com/_wap/login  (cookie posé sur .example.com)
+```
+
+Variables en plus : `LOGIN_URL` (URL publique de la page de login) et `COOKIE_DOMAIN` (domaine parent
+partagé, tous les sites protégés doivent en être des sous-domaines). `UPSTREAM` n'est plus utilisé.
+Après connexion, le retour vers la page demandée est limité aux URLs du `COOKIE_DOMAIN`.
+Voir `docker-compose.forwardauth.example.yml`.
+
+Points d'attention : `/_wap/verify` ne doit être joignable que par Traefik (réseau interne) ; le cookie de
+session est transmis aux sites par Traefik (contrairement au mode proxy qui le retire) ; il n'y a pas de
+règles par site, toute passkey enrôlée donne accès à tous les sites protégés.
+
 ## Enrôlement (endpoint privé, optionnel)
 
 Avec `ENROLL_ENABLED=true`, un **second port** (`ENROLL_LISTEN`, 8081) sert la page d'enrôlement
@@ -30,7 +52,10 @@ domaine est `RP_ID` ou un sous-domaine, et cette URL doit figurer dans `RP_ORIGI
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `UPSTREAM` | – (obligatoire) | URL du site à protéger |
+| `MODE` | `proxy` | `proxy` ou `forward` (forwardAuth Traefik) |
+| `UPSTREAM` | – (obligatoire en mode proxy) | URL du site à protéger |
+| `LOGIN_URL` | – (mode forward) | URL publique de `/_wap/login` |
+| `COOKIE_DOMAIN` | – (mode forward) | domaine parent du cookie, ex. `example.com` |
 | `RP_ID` | – (obligatoire) | domaine WebAuthn (`example.com`, `localhost`) |
 | `RP_ORIGINS` | – (obligatoire) | origines autorisées, séparées par des virgules (URL publique du site + éventuellement celle d'enrôlement) |
 | `LISTEN` | `:8080` | port du proxy |

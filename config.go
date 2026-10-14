@@ -11,7 +11,10 @@ import (
 
 // Config est lu uniquement depuis les variables d'environnement.
 type Config struct {
-	Upstream       *url.URL      // UPSTREAM : site à protéger
+	Mode           string        // MODE : "proxy" (défaut) ou "forward" (forwardAuth Traefik)
+	LoginURL       *url.URL      // LOGIN_URL (mode forward) : URL publique de la page de login
+	CookieDomain   string        // COOKIE_DOMAIN (mode forward) : domaine parent du cookie de session
+	Upstream       *url.URL      // UPSTREAM (mode proxy) : site à protéger
 	Listen         string        // LISTEN : port public du proxy
 	EnrollEnabled  bool          // ENROLL_ENABLED : active le endpoint d'enrôlement
 	EnrollListen   string        // ENROLL_LISTEN : port privé d'enrôlement
@@ -51,15 +54,31 @@ func LoadConfig() (*Config, error) {
 		UserHeader:     getenv("USER_HEADER", "X-Authenticated-User"),
 	}
 
-	up := getenv("UPSTREAM", "")
-	if up == "" {
-		return nil, fmt.Errorf("UPSTREAM est obligatoire (ex: http://monsite:80)")
+	c.Mode = getenv("MODE", "proxy")
+	switch c.Mode {
+	case "proxy":
+		up := getenv("UPSTREAM", "")
+		if up == "" {
+			return nil, fmt.Errorf("UPSTREAM est obligatoire en mode proxy (ex: http://monsite:80)")
+		}
+		u, err := url.Parse(up)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, fmt.Errorf("UPSTREAM invalide: %q", up)
+		}
+		c.Upstream = u
+	case "forward":
+		lu, err := url.Parse(getenv("LOGIN_URL", ""))
+		if err != nil || (lu.Scheme != "http" && lu.Scheme != "https") || lu.Host == "" {
+			return nil, fmt.Errorf("LOGIN_URL est obligatoire en mode forward (ex: https://auth.example.com/_wap/login)")
+		}
+		c.LoginURL = lu
+		c.CookieDomain = strings.ToLower(strings.TrimPrefix(getenv("COOKIE_DOMAIN", ""), "."))
+		if c.CookieDomain == "" {
+			return nil, fmt.Errorf("COOKIE_DOMAIN est obligatoire en mode forward (ex: example.com)")
+		}
+	default:
+		return nil, fmt.Errorf("MODE invalide: %q (proxy ou forward)", c.Mode)
 	}
-	u, err := url.Parse(up)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("UPSTREAM invalide: %q", up)
-	}
-	c.Upstream = u
 
 	if c.RPID == "" {
 		return nil, fmt.Errorf("RP_ID est obligatoire (domaine, ex: example.com ou localhost)")

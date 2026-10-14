@@ -1,0 +1,47 @@
+# Mode forwardAuth : un seul webauthnproxy protège plusieurs sites derrière Traefik.
+# Traefik -> (verify) webauthnproxy ; Traefik -> site web directement.
+services:
+  traefik:
+    image: docker.io/library/traefik:v3
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --certificatesresolvers.le.acme.email=vous@example.com
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+    ports: ["443:443"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
+
+  webauthnproxy:
+    build: .
+    environment:
+      MODE: forward
+      LOGIN_URL: https://auth.example.com/_wap/login
+      COOKIE_DOMAIN: example.com            # cookie partagé par tous les sous-domaines
+      RP_ID: example.com
+      RP_ORIGINS: https://auth.example.com  # origine de la page de login (+ celle d'enrôlement si activé)
+      # ENROLL_ENABLED: "true"
+    volumes:
+      - ./data:/data
+    labels:
+      - traefik.enable=true
+      # Hôte de login (public)
+      - traefik.http.routers.auth.rule=Host(`auth.example.com`)
+      - traefik.http.routers.auth.entrypoints=websecure
+      - traefik.http.routers.auth.tls.certresolver=le
+      - traefik.http.services.auth.loadbalancer.server.port=8080
+      # Middleware réutilisable sur n'importe quel routeur
+      - traefik.http.middlewares.passkey.forwardauth.address=http://webauthnproxy:8080/_wap/verify
+      - traefik.http.middlewares.passkey.forwardauth.authResponseHeaders=X-Authenticated-User
+
+  monsite:
+    image: docker.io/library/nginx:alpine
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.monsite.rule=Host(`app.example.com`)
+      - traefik.http.routers.monsite.entrypoints=websecure
+      - traefik.http.routers.monsite.tls.certresolver=le
+      - traefik.http.routers.monsite.middlewares=passkey   # <- la protection

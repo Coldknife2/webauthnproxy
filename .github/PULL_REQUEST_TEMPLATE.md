@@ -1,14 +1,14 @@
-## Contexte
+## Context
 
-<!-- Quel problème cette PR résout-elle ? Lien vers l'issue éventuelle. -->
+<!-- What problem does this PR solve? Link the issue if any. -->
 
-## Changements
+## Changes
 
-<!-- Liste concise de ce qui change. -->
+<!-- Concise list of what changes. -->
 
-## Vérifications
+## Checks
 
-- [ ] `make check` passe (gofmt, vet, tests)
-- [ ] `make e2e` passe si le comportement d'enrôlement, de login ou de proxy change
-- [ ] README / CHANGELOG mis à jour si l'interface (variables, ports, formats) change
-- [ ] Aucune nouvelle dépendance, ou elle est justifiée ci-dessus
+- [ ] `make check` passes (gofmt, vet, tests)
+- [ ] `make e2e` passes if enrollment, login or proxy behavior changes
+- [ ] README / CHANGELOG updated if the interface (variables, ports, formats) changes
+- [ ] No new dependency, or it is justified above

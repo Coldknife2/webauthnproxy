@@ -1,63 +1,67 @@
 # webauthnproxy
 
+🇬🇧 English · 🇫🇷 [Français](README.fr.md)
+
 [![CI](https://github.com/coldknife2/webauthnproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/coldknife2/webauthnproxy/actions/workflows/ci.yml)
-[![Licence MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Protégez n'importe quel site auto-hébergé par une connexion *passkey* (WebAuthn), avec un seul conteneur et un fichier JSON.**
+**Protect any self-hosted site with a *passkey* (WebAuthn) login, using a single container and one JSON file.**
 
-Pas de mot de passe, pas d'annuaire, pas de fournisseur OIDC à déployer. Se place devant un site comme reverse proxy,
-ou derrière Traefik comme service `forwardAuth` pour protéger plusieurs sites.
+No passwords, no directory, no OIDC provider to deploy. Put it in front of a site as a reverse proxy, or behind Traefik as a
+`forwardAuth` service that protects several sites at once.
 
-## Sommaire
+> **Note:** the web pages and log messages are currently in French (an English UI is planned). Where this README quotes a log line, it quotes the French text.
 
-- [Fonctionnalités](#fonctionnalités)
-- [Comment ça marche](#comment-ça-marche)
-- [Démarrage rapide](#démarrage-rapide)
-- [Modes de fonctionnement](#modes-de-fonctionnement)
-- [Enrôlement des passkeys](#enrôlement-des-passkeys)
+## Table of contents
+
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [Operating modes](#operating-modes)
+- [Enrolling passkeys](#enrolling-passkeys)
 - [Configuration](#configuration)
-- [Modèle de sécurité](#modèle-de-sécurité)
-- [Pourquoi ce projet ? Alternatives](#pourquoi-ce-projet--alternatives)
-- [Dépannage](#dépannage)
-- [Développement](#développement)
-- [Contribuer, sécurité, licence](#contribuer-sécurité-licence)
+- [Security model](#security-model)
+- [Why this project? Alternatives](#why-this-project-alternatives)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Contributing, security, license](#contributing-security-license)
 
-## Fonctionnalités
+## Features
 
-- 🔐 Connexion **par passkey uniquement**, sans nom d'utilisateur à saisir (*discoverable credentials*), vérification utilisateur (PIN / biométrie) exigée par défaut.
-- 🔁 Deux modes : **proxy** intégré (avec ou sans Traefik, WebSocket compris) ou **forwardAuth** Traefik (un déploiement pour plusieurs sites).
-- ➕ Deux façons d'**enrôler** des passkeys, activables séparément : enrôlement automatique protégé par les passkeys existantes, ou outil HTML statique + import manuel d'un fichier JSON.
-- 🗃️ **Base de données = un fichier JSON** (clés publiques uniquement), écrit de façon atomique.
-- 📦 Image **distroless**, utilisateur non-root, ~13 Mo ; quelques centaines de lignes de Go à auditer.
-- ✅ Testé de bout en bout : Chromium avec authenticator virtuel et Traefik réel.
+- 🔐 **Passkey-only** login, no username to type (discoverable credentials), user verification (PIN / biometrics) required by default.
+- 🔁 Two modes: built-in **proxy** (with or without Traefik, WebSockets included) or Traefik **forwardAuth** (one deployment, many sites).
+- ➕ Two ways to **enroll** passkeys, enabled independently: automatic enrollment protected by existing passkeys, or a static HTML tool plus a manual JSON import.
+- 🗃️ **The database is one JSON file** (public keys only), written atomically.
+- 📦 **Distroless** image, non-root user, ~13 MB; a few hundred lines of Go to audit.
+- ✅ Tested end to end: Chromium with a virtual authenticator and a real Traefik.
 
-## Comment ça marche
+## How it works
 
 ```
-Mode proxy        Utilisateur ──► (Traefik) ──► webauthnproxy ──► site web
-                                                 │ session valide ? sinon redirection vers /_wap/login
-                                                 └ transmet la requête + X-Authenticated-User
+Proxy mode        User ──► (Traefik) ──► webauthnproxy ──► website
+                                          │ valid session? otherwise redirect to /_wap/login
+                                          └ forwards the request + X-Authenticated-User
 
-Mode forwardAuth  Utilisateur ──► Traefik ──(1) GET /_wap/verify──► webauthnproxy
-                                    │  (2) 2xx : la requête continue ──► site web
-                                    └──── sinon : redirection vers le login (navigateur) ou 401
+forwardAuth mode  User ──► Traefik ──(1) GET /_wap/verify──► webauthnproxy
+                             │  (2) 2xx: the request continues ──► website
+                             └──── otherwise: redirect to login (browser) or 401
 ```
 
-1. L'utilisateur arrive sur le site sans session : il est redirigé vers la page de connexion (`/_wap/login`).
-2. Le navigateur demande la passkey ; la signature est vérifiée par le serveur.
-3. Un cookie de session signé (`wap_session`, HttpOnly, SameSite=Lax) est posé, l'utilisateur revient sur la page demandée.
+1. A user without a session is redirected to the login page (`/_wap/login`).
+2. The browser asks for the passkey; the server verifies the signature.
+3. A signed session cookie (`wap_session`, HttpOnly, SameSite=Lax) is set and the user returns to the requested page.
 
-Le site protégé ne doit **pas** être joignable autrement que par le proxy (aucun port publié, aucun routeur Traefik direct en mode proxy).
+The protected site must **not** be reachable any other way than through the proxy (no published port, no direct Traefik router in proxy mode).
 
-## Démarrage rapide
+## Quick start
 
-Image locale (podman ou docker, les commandes sont identiques) :
+Local image (podman or docker, the commands are identical):
 
 ```sh
 git clone https://github.com/coldknife2/webauthnproxy && cd webauthnproxy
 podman build -t webauthnproxy .
 
-mkdir -p data && podman unshare chown 65532:65532 data   # docker : sudo chown 65532 data
+mkdir -p data && podman unshare chown 65532:65532 data   # docker: sudo chown 65532 data
 podman run -d --name webauthnproxy \
   -p 8080:8080 -p 127.0.0.1:8081:8081 -v ./data:/data:Z \
   -e UPSTREAM=http://host.containers.internal:3000 \
@@ -65,93 +69,92 @@ podman run -d --name webauthnproxy \
   -e ENROLL_ENABLED=true \
   webauthnproxy
 
-podman logs webauthnproxy        # affiche le « Jeton d'amorçage de l'enrôlement »
+podman logs webauthnproxy        # prints the bootstrap token ("Jeton d'amorçage de l'enrôlement : …")
 ```
 
-1. Ouvrez <http://localhost:8081>, saisissez le **jeton d'amorçage** et un nom : créez la première passkey.
-2. Ouvrez <http://localhost:8080> : connexion par passkey, puis votre site s'affiche.
-3. Une fois les passkeys enrôlées, relancez le conteneur **sans** `ENROLL_ENABLED` pour fermer l'enrôlement.
+1. Open <http://localhost:8081>, enter the **bootstrap token** and a name: this creates the first passkey.
+2. Open <http://localhost:8080>: sign in with the passkey and your site appears.
+3. Once your passkeys are enrolled, restart the container **without** `ENROLL_ENABLED` to close enrollment.
 
-En production : HTTPS obligatoire (WebAuthn l'exige hors `localhost`), `RP_ID` = votre domaine, `RP_ORIGINS` = l'URL publique du site.
-Exemples complets avec Traefik : [`docker-compose.example.yml`](docker-compose.example.yml) (mode proxy) et
-[`docker-compose.forwardauth.example.yml`](docker-compose.forwardauth.example.yml) (mode forwardAuth).
+In production, HTTPS is mandatory (WebAuthn requires it outside `localhost`), `RP_ID` is your domain and `RP_ORIGINS` is the site's public URL.
+Complete Traefik examples: [`docker-compose.example.yml`](docker-compose.example.yml) (proxy mode) and
+[`docker-compose.forwardauth.example.yml`](docker-compose.forwardauth.example.yml) (forwardAuth mode).
 
-## Modes de fonctionnement
+## Operating modes
 
-### Mode proxy (`MODE=proxy`, défaut)
+### Proxy mode (`MODE=proxy`, default)
 
-Le service reçoit le trafic et le relaie vers `UPSTREAM`. Pour une requête authentifiée :
+The service receives the traffic and relays it to `UPSTREAM`. For an authenticated request:
 
-- l'en-tête `X-Authenticated-User` (renommable avec `USER_HEADER`) contient l'utilisateur ; toute valeur envoyée par le client est écrasée ;
-- le cookie de session n'est **pas** transmis au site ;
-- le `Host` est réécrit vers l'upstream (`PRESERVE_HOST=true` pour garder celui du client) ; `X-Forwarded-*` est renseigné.
+- the `X-Authenticated-User` header (renamable with `USER_HEADER`) carries the user; any value sent by the client is overwritten;
+- the session cookie is **not** forwarded to the site;
+- `Host` is rewritten to the upstream's (`PRESERVE_HOST=true` keeps the client's); `X-Forwarded-*` is set.
 
-Convient pour un site unique, avec ou sans Traefik. Le préfixe `/_wap/` est réservé au service.
+Suited to a single site, with or without Traefik. The `/_wap/` prefix is reserved for the service.
 
-### Mode forwardAuth (`MODE=forward`)
+### forwardAuth mode (`MODE=forward`)
 
-Le service ne relaie rien : Traefik l'interroge sur `/_wap/verify` pour chaque requête et laisse passer (2xx) ou renvoie la
-réponse du service (redirection vers `LOGIN_URL` pour un navigateur, `401` sinon). **Un seul déploiement protège autant de sites
-qu'on le souhaite** en ajoutant le middleware à leurs routeurs.
+The service relays nothing: Traefik queries `/_wap/verify` for every request and either lets it through (2xx) or returns the service's
+response (a redirect to `LOGIN_URL` for browsers, `401` otherwise). **A single deployment protects as many sites as you like** by adding the
+middleware to their routers.
 
 ```yaml
-# middleware réutilisable
+# reusable middleware
 - traefik.http.middlewares.passkey.forwardauth.address=http://webauthnproxy:8080/_wap/verify
 - traefik.http.middlewares.passkey.forwardauth.authResponseHeaders=X-Authenticated-User
-# sur chaque routeur à protéger
-- traefik.http.routers.monsite.middlewares=passkey
+# on each router to protect
+- traefik.http.routers.mysite.middlewares=passkey
 ```
 
-Variables spécifiques : `LOGIN_URL` (URL publique de la page de login, ex. `https://auth.example.com/_wap/login`) et
-`COOKIE_DOMAIN` (domaine parent partagé, ex. `example.com` : tous les sites protégés doivent en être des sous-domaines).
-Après connexion, le retour vers la page demandée n'est accepté que pour des URLs de ce domaine.
+Mode-specific variables: `LOGIN_URL` (public URL of the login page, e.g. `https://auth.example.com/_wap/login`) and
+`COOKIE_DOMAIN` (shared parent domain, e.g. `example.com`: every protected site must be a subdomain of it).
+After login, returning to the requested page is only accepted for URLs within that domain.
 
-À savoir : `/_wap/verify` ne doit être joignable que par Traefik (réseau interne) ; le cookie de session est transmis aux sites
-par Traefik ; il n'y a pas de règles par site, toute passkey enrôlée donne accès à **tous** les sites protégés.
+Good to know: `/_wap/verify` must only be reachable by Traefik (internal network); Traefik forwards the session cookie to the sites;
+there are no per-site rules, so any enrolled passkey grants access to **all** protected sites.
 
-## Enrôlement des passkeys
+## Enrolling passkeys
 
-Une passkey est liée à un **domaine** (`RP_ID`) : le navigateur refuse d'en créer une pour un domaine différent de celui de
-la page (ou d'un de ses parents), et refuse tout contexte non sécurisé hors `localhost`. Deux outils, activables séparément :
+A passkey is bound to a **domain** (`RP_ID`): the browser refuses to create one for a domain other than the page's (or one of its parents), and
+refuses insecure contexts outside `localhost`. Two tools, enabled independently:
 
-| | Enrôlement **automatique** | Outil **statique** + import manuel |
+| | **Automatic** enrollment | **Static** tool + manual import |
 |---|---|---|
-| Activation | `ENROLL_ENABLED=true` | `TOOL_ENABLED=true` |
+| Enable with | `ENROLL_ENABLED=true` | `TOOL_ENABLED=true` |
 | Port | `8081` (`ENROLL_LISTEN`) | `8082` (`TOOL_LISTEN`) |
-| Accès | **protégé** : connexion par une passkey existante | aucun besoin : page sans état ni écriture |
-| Exposition conseillée | privée (défense en profondeur) | peut être publique |
-| Ajout d'une passkey | immédiat, depuis la page | l'administrateur copie un fichier JSON dans `DATA_DIR/import/` |
-| Première passkey | jeton d'amorçage (logs) | pas de jeton nécessaire |
+| Access | **protected**: sign in with an existing passkey | none needed: the page has no state and no write access |
+| Recommended exposure | private (defense in depth) | may be public |
+| Adding a passkey | instant, from the page | an administrator copies a JSON file into `DATA_DIR/import/` |
+| First passkey | bootstrap token (logs) | no token needed |
 
-### Enrôlement automatique (port 8081)
+### Automatic enrollment (port 8081)
 
-La page `http(s)://<hôte>:8081/` permet d'ajouter et de supprimer des passkeys.
+The page `http(s)://<host>:8081/` lets you add and delete passkeys.
 
-- **Protégée par les passkeys existantes** : sans session, elle redirige vers sa propre page de connexion ; l'API répond `401`.
-- **Amorçage** : tant qu'aucune passkey n'existe, un **jeton à usage d'amorçage** est généré et écrit dans les logs au démarrage ;
-  il faut le saisir pour créer la première. Dès qu'une passkey existe, le jeton cesse de fonctionner.
-- Les écritures exigent l'en-tête `X-Requested-With` (protection CSRF). La **dernière passkey ne peut pas être supprimée** (pas de verrouillage).
-- Tout utilisateur connecté peut créer de nouveaux utilisateurs et passkeys : tous les utilisateurs sont administrateurs.
-- L'URL de cette page doit figurer dans `RP_ORIGINS` et être sous le domaine `RP_ID`.
-- Le cookie d'un hôte est partagé entre ports : sur un même nom d'hôte, être connecté à l'enrôlement donne aussi accès au proxy.
+- **Protected by existing passkeys**: without a session it redirects to its own login page; the API answers `401`.
+- **Bootstrap**: while no passkey exists, a **one-time bootstrap token** is generated and written to the logs at startup; it must be entered
+  to create the first passkey. As soon as a passkey exists, the token stops working.
+- Writes require the `X-Requested-With` header (CSRF protection). The **last passkey cannot be deleted** (no lock-out).
+- Any signed-in user can create new users and passkeys: all users are administrators.
+- This page's URL must be listed in `RP_ORIGINS` and lie under the `RP_ID` domain.
+- A host's cookie is shared across ports: on the same hostname, being signed in to enrollment also grants access to the proxy.
 
-### Outil statique (port 8082) et import manuel
+### Static tool (port 8082) and manual import
 
-Pour enrôler **sans exposer d'API d'écriture** : une page HTML autonome ([`web/tool.html`](web/tool.html)) qui ne contacte aucun serveur.
+To enroll **without exposing any write API**: a standalone HTML page ([`web/tool.html`](web/tool.html)) that contacts no server.
 
-1. Ouvrez l'outil (`http(s)://<hôte>:8082/`, domaine pré-rempli avec `RP_ID`), saisissez un nom, cliquez **Créer la passkey**.
-2. L'outil affiche un **fichier JSON** (clé publique et métadonnées, aucun secret) : téléchargez-le.
-3. Copiez-le **à la main** dans le dossier d'import du proxy : `cp remi-example.com.json data/import/`
-   (avec un conteneur : `podman cp remi-example.com.json webauthnproxy:/data/import/`).
-4. En quelques secondes le proxy valide et importe le fichier, puis le renomme en `.imported` (ou `.rejected`, cause dans les logs).
+1. Open the tool (`http(s)://<host>:8082/`, domain pre-filled with `RP_ID`), enter a name and click **Créer la passkey** (create the passkey).
+2. The tool shows a **JSON file** (public key and metadata, no secret): download it.
+3. Copy it **by hand** into the proxy's import folder: `cp remi-example.com.json data/import/`
+   (with a container: `podman cp remi-example.com.json webauthnproxy:/data/import/`).
+4. Within seconds the proxy validates and imports the file, then renames it to `.imported` (or `.rejected`, with the reason in the logs).
 
-La page doit être servie en **HTTPS sous le domaine `RP_ID`** (ex. `https://tool.example.com`), ou sur `localhost` avec `RP_ID=localhost` :
-**un fichier ouvert directement (`file://`) ne fonctionne pas**, c'est une règle du navigateur. L'origine de l'outil n'a pas besoin d'être dans `RP_ORIGINS`.
-L'outil peut aussi être hébergé tel quel (c'est un fichier unique) sur n'importe quel site statique sous le même domaine.
+The page must be served over **HTTPS under the `RP_ID` domain** (e.g. `https://tool.example.com`), or on `localhost` with `RP_ID=localhost`:
+**a file opened directly (`file://`) does not work**; this is a browser rule. The tool's origin does not need to be in `RP_ORIGINS`.
+The tool can also be hosted as-is (it is a single file) on any static site under the same domain.
 
-Ce que le proxy **vérifie** à l'import : version du format, passkey créée pour le bon domaine (empreinte `rpIdHash`),
-drapeaux présence/vérification utilisateur, clé publique COSE valide, identifiant de passkey cohérent, identifiant utilisateur cohérent
-avec le nom, absence de doublon. Format (version 1) :
+What the proxy **checks** on import: format version, passkey created for the right domain (`rpIdHash`), user presence/verification flags, valid COSE
+public key, consistent credential ID, user ID consistent with the name, no duplicate. Format (version 1):
 
 ```json
 {
@@ -162,143 +165,137 @@ avec le nom, absence de doublon. Format (version 1) :
 }
 ```
 
-Le dossier `import/` est surveillé en permanence : **seul quelqu'un pouvant écrire dans le volume de données peut ajouter une passkey par ce biais**.
-Pour ajouter un 2ᵉ appareil à un utilisateur, rejouez l'outil avec le **même nom**.
+The `import/` folder is watched continuously: **only someone who can write to the data volume can add a passkey this way**.
+To add a second device to a user, run the tool again with the **same name**.
 
-### Perte de toutes les passkeys
+### Losing all passkeys
 
-Arrêtez le service, supprimez `data/users.json`, relancez avec `ENROLL_ENABLED=true` : un nouveau jeton d'amorçage est affiché dans les logs.
-(Ou déposez un fichier produit par l'outil statique dans `data/import/`.)
+Stop the service, delete `data/users.json`, restart with `ENROLL_ENABLED=true`: a new bootstrap token is printed in the logs.
+(Or drop a file produced by the static tool into `data/import/`.)
 
 ## Configuration
 
-Tout se règle par variables d'environnement.
+Everything is set through environment variables.
 
-| Variable | Défaut | Description |
+| Variable | Default | Description |
 |---|---|---|
-| `MODE` | `proxy` | `proxy` ou `forward` (forwardAuth Traefik) |
-| `UPSTREAM` | – | **Mode proxy.** URL du site à protéger (`http://monsite:80`) |
-| `LOGIN_URL` | – | **Mode forward.** URL publique de la page de login |
-| `COOKIE_DOMAIN` | – | **Mode forward.** Domaine parent du cookie (`example.com`) |
-| `RP_ID` | – (obligatoire) | Domaine WebAuthn : domaine du site ou parent commun (`example.com`, `localhost`) |
-| `RP_ORIGINS` | – (obligatoire) | Origines autorisées pour login/enrôlement, séparées par des virgules (URL publique, sans `/` final) |
-| `RP_NAME` | `WebAuthn Proxy` | Nom affiché par l'authenticator |
-| `LISTEN` | `:8080` | Port du proxy / de `/_wap/verify` |
-| `ENROLL_ENABLED` | `false` | Active l'enrôlement automatique |
-| `ENROLL_LISTEN` | `:8081` | Port de l'enrôlement automatique |
-| `TOOL_ENABLED` | `false` | Active l'outil d'enrôlement statique |
-| `TOOL_LISTEN` | `:8082` | Port de l'outil statique |
-| `DATA_DIR` | `/data` | `users.json`, `session.key`, dossier `import/` (à monter en volume) |
-| `SESSION_SECRET` | généré | Secret de signature des cookies (≥ 16 caractères) ; sinon généré dans `DATA_DIR/session.key` |
-| `SESSION_TTL` | `12h` | Durée d'une session |
-| `USER_VERIFICATION` | `required` | `preferred` pour accepter les authenticators sans PIN/biométrie |
-| `PRESERVE_HOST` | `false` | Mode proxy : transmettre le `Host` du client à l'upstream |
-| `USER_HEADER` | `X-Authenticated-User` | En-tête portant l'utilisateur |
+| `MODE` | `proxy` | `proxy` or `forward` (Traefik forwardAuth) |
+| `UPSTREAM` | – | **Proxy mode.** URL of the site to protect (`http://mysite:80`) |
+| `LOGIN_URL` | – | **Forward mode.** Public URL of the login page |
+| `COOKIE_DOMAIN` | – | **Forward mode.** Parent domain of the cookie (`example.com`) |
+| `RP_ID` | – (required) | WebAuthn domain: the site's domain or a common parent (`example.com`, `localhost`) |
+| `RP_ORIGINS` | – (required) | Origins allowed for login/enrollment, comma-separated (public URL, no trailing `/`) |
+| `RP_NAME` | `WebAuthn Proxy` | Name shown by the authenticator |
+| `LISTEN` | `:8080` | Proxy / `/_wap/verify` port |
+| `ENROLL_ENABLED` | `false` | Enable automatic enrollment |
+| `ENROLL_LISTEN` | `:8081` | Automatic enrollment port |
+| `TOOL_ENABLED` | `false` | Enable the static enrollment tool |
+| `TOOL_LISTEN` | `:8082` | Static tool port |
+| `DATA_DIR` | `/data` | `users.json`, `session.key`, `import/` folder (mount as a volume) |
+| `SESSION_SECRET` | generated | Cookie-signing secret (≥ 16 characters); otherwise generated in `DATA_DIR/session.key` |
+| `SESSION_TTL` | `12h` | Session lifetime |
+| `USER_VERIFICATION` | `required` | `preferred` to accept authenticators without PIN/biometrics |
+| `PRESERVE_HOST` | `false` | Proxy mode: forward the client's `Host` to the upstream |
+| `USER_HEADER` | `X-Authenticated-User` | Header carrying the user |
 
-Ports : `8080` est le seul à exposer publiquement (via Traefik) ; `8081` en privé ; `8082` est inoffensif mais inutile hors des phases d'enrôlement.
+Ports: only `8080` should be publicly exposed (through Traefik); keep `8081` private; `8082` is harmless but pointless outside enrollment phases.
 
-## Modèle de sécurité
+## Security model
 
-**Ce qui est garanti**
+**What is guaranteed**
 
-- Aucune requête n'atteint le site sans cookie de session valide (signé HMAC-SHA256, expirant, invalidé si l'utilisateur est supprimé).
-- Login : challenge à usage unique (5 min), origine et domaine vérifiés, compteur de signatures mis à jour, vérification utilisateur exigée.
-- Cookie `HttpOnly`, `SameSite=Lax`, `Secure` dès que l'accès est en HTTPS ; pages servies avec une CSP restrictive.
-- Redirection après login (`next`) limitée aux chemins locaux, ou en mode forward au `COOKIE_DOMAIN` : pas de redirection ouverte.
-- Enrôlement automatique : session requise, jeton d'amorçage comparé en temps constant, protection CSRF, refus de supprimer la dernière passkey.
-- Import : fichier non fiable, entièrement revalidé (voir ci-dessus), taille limitée.
-- Outil statique : aucune écriture, CSP par empreinte (`script-src 'sha256-…'`, aucun `unsafe-inline`).
-- La base ne contient que des **clés publiques** ; seul `session.key` est secret (sa fuite permet de forger des sessions).
+- No request reaches the site without a valid session cookie (HMAC-SHA256 signed, expiring, invalidated if the user is deleted).
+- Login: single-use challenge (5 min), origin and domain verified, signature counter updated, user verification required.
+- Cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` whenever access is over HTTPS; pages are served with a restrictive CSP.
+- The post-login redirect (`next`) is limited to local paths, or to `COOKIE_DOMAIN` in forward mode: no open redirect.
+- Automatic enrollment: session required, bootstrap token compared in constant time, CSRF protection, the last passkey cannot be deleted.
+- Import: the file is untrusted and fully revalidated (see above), with a size limit.
+- Static tool: no writes, hash-based CSP (`script-src 'sha256-…'`, no `unsafe-inline`).
+- The database holds **public keys only**; only `session.key` is secret (leaking it allows forging sessions).
 
-**Hypothèses et limites**
+**Assumptions and limits**
 
-- TLS est terminé en amont (Traefik) ; sans HTTPS, WebAuthn ne fonctionne pas hors `localhost`.
-- Pas de limitation de débit, de journal d'audit, de règles par site ou de haute disponibilité (instance unique, cérémonies en mémoire) : à compléter côté reverse proxy.
-- Les identifiants utilisateur (*user handle*) sont dérivés du nom (SHA-256) pour que le même nom désigne toujours le même utilisateur quel que soit l'outil d'enrôlement.
-- Un domaine racine par instance (`RP_ID`).
+- TLS is terminated upstream (Traefik); without HTTPS WebAuthn does not work outside `localhost`.
+- No rate limiting, audit log, per-site rules or high availability (single instance, ceremonies kept in memory): complete these at the reverse proxy.
+- User handles are derived from the name (SHA-256) so the same name always designates the same user whichever enrollment tool is used.
+- One root domain per instance (`RP_ID`).
 
-Signalement de vulnérabilité : voir [SECURITY.md](SECURITY.md).
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
-## Pourquoi ce projet ? Alternatives
+## Why this project? Alternatives
 
-**Besoin** : mettre une authentification *passkey uniquement* devant un ou plusieurs sites auto-hébergés
-(derrière Traefik ou non), avec le strict minimum : un conteneur, un fichier JSON, pas d'annuaire,
-pas de mot de passe, pas de fournisseur OIDC à déployer, et un enrôlement qu'on peut éteindre.
+**Need**: put *passkey-only* authentication in front of one or several self-hosted sites (behind Traefik or not), with the bare minimum: one
+container, one JSON file, no directory, no password, no OIDC provider to deploy, and an enrollment that can be switched off.
 
-**Recherche préalable** (état au 14/10/2026, sources en bas de section) :
+**Prior research** (as of 2026-10-14; sources at the end of this section):
 
-- **Plugin Traefik** : aucun plugin WebAuthn/passkey trouvé dans le [catalogue](https://plugins.traefik.io)
-  ni sur la [communauté](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396), où
-  la demande est restée sans réponse native (piste proposée : passer par du ForwardAuth). Les plugins
-  d'authentification existants font du basic auth/mTLS ([trauth](https://github.com/leonjza/trauth)), du JWT, de l'OIDC ou du LDAP.
-  Les plugins tournent par ailleurs dans un interpréteur (Yaegi), sans stockage ni état de cérémonie : peu adapté au WebAuthn.
-- **[Pocket ID](https://github.com/pocket-id/pocket-id)** : fournisseur OIDC/OAuth 2.0 **uniquement par passkey**
-  (BSD-2). C'est un *fournisseur d'identité*, pas un proxy : les applications doivent parler OIDC. Son guide officiel
-  pour les apps sans OIDC renvoie vers un proxy d'authentification tiers (Tinyauth, caddy-security, OAuth2 Proxy ou
-  forward auth Traefik) ([guide](https://pocket-id.org/docs/guides/proxy-services), lu via un extrait de recherche).
-- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)** : middleware d'authentification pour Traefik, Nginx et Caddy
-  (AGPL-3.0) ; méthodes citées : OAuth/OIDC, LDAP, contrôle d'accès, TOTP. Le README ne mentionne **ni passkey ni WebAuthn** ;
-  une [discussion](https://github.com/tinyauthapp/tinyauth/discussions) demandant la connexion par passkey (fév. 2026) existe, sans réponse que j'aie pu confirmer.
-- **Authelia / Authentik** : solutions complètes (portail SSO, politiques, annuaires), plus lourdes à exploiter
-  (Authentik demande PostgreSQL ; non revérifié en détail ici).
+- **Traefik plugin**: no WebAuthn/passkey plugin found in the [catalog](https://plugins.traefik.io) or on the
+  [community forum](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396), where the request went unanswered natively
+  (suggested route: ForwardAuth). Existing authentication plugins do basic auth/mTLS ([trauth](https://github.com/leonjza/trauth)), JWT, OIDC or LDAP.
+  Plugins also run in an interpreter (Yaegi) with no storage or ceremony state, which suits WebAuthn poorly.
+- **[Pocket ID](https://github.com/pocket-id/pocket-id)**: an OIDC/OAuth 2.0 provider supporting **passkeys only** (BSD-2). It is an *identity
+  provider*, not a proxy: applications must speak OIDC. Its official guide for apps without OIDC points to a third-party authentication proxy
+  (Tinyauth, caddy-security, OAuth2 Proxy or Traefik forward auth) ([guide](https://pocket-id.org/docs/guides/proxy-services), read through a search excerpt).
+- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)**: an authentication middleware for Traefik, Nginx and Caddy (AGPL-3.0); cited methods:
+  OAuth/OIDC, LDAP, access control, TOTP. Its README mentions **neither passkeys nor WebAuthn**; a
+  [discussion](https://github.com/tinyauthapp/tinyauth/discussions) asking for passkey login (Feb 2026) exists, with no maintainer answer I could confirm.
+- **Authelia / Authentik**: full solutions (SSO portal, policies, directories), heavier to operate (Authentik needs PostgreSQL; not re-verified in detail here).
 
-**Conclusion** : la combinaison *Pocket ID + Tinyauth (ou OAuth2 Proxy) + Traefik* offre déjà des passkeys en
-forwardAuth, avec de vrais avantages (SSO OIDC, interface d'administration, multi-utilisateurs, maintenance
-communautaire). Mais cela fait **trois composants** et passe par OIDC. webauthnproxy vise le cas plus petit :
-**un seul conteneur, sans OIDC, sans autre dépendance**, quelques centaines de lignes de Go à auditer.
+**Conclusion**: *Pocket ID + Tinyauth (or OAuth2 Proxy) + Traefik* already provides passkeys through forwardAuth, with real advantages (OIDC SSO, admin UI,
+multi-user, community maintenance). But that is **three components** and goes through OIDC. webauthnproxy targets the smaller case:
+**one container, no OIDC, no other dependency**, a few hundred lines of Go to audit.
 
-| Besoin | webauthnproxy | Pocket ID + Tinyauth | Authelia / Authentik |
+| Need | webauthnproxy | Pocket ID + Tinyauth | Authelia / Authentik |
 |---|---|---|---|
-| Passkey comme unique méthode | ✅ | ✅ (via Pocket ID) | ✅ (parmi d'autres) |
-| Composants à déployer | 1 | 2 (+ Traefik) | 1 à 3 |
-| Stockage | fichier JSON | base de données | base de données |
-| SSO OIDC pour d'autres applis | ❌ | ✅ | ✅ |
-| Politiques par site / groupes | ❌ | partiel (Tinyauth) | ✅ |
-| Fonctionne sans Traefik (proxy intégré) | ✅ | ❌ | ❌ |
-| Maturité / communauté | faible (nouveau) | élevée | élevée |
+| Passkey as the only method | ✅ | ✅ (via Pocket ID) | ✅ (among others) |
+| Components to deploy | 1 | 2 (+ Traefik) | 1 to 3 |
+| Storage | JSON file | database | database |
+| OIDC SSO for other apps | ❌ | ✅ | ✅ |
+| Per-site policies / groups | ❌ | partial (Tinyauth) | ✅ |
+| Works without Traefik (built-in proxy) | ✅ | ❌ | ❌ |
+| Maturity / community | low (new) | high | high |
 
-**À choisir autrement si** : vous avez besoin de SSO pour plusieurs applications, de groupes/politiques par site,
-de comptes gérés par plusieurs administrateurs, ou d'un projet largement audité. Pocket ID + Tinyauth est alors la voie recommandée.
+**Pick something else if** you need SSO for several applications, groups/per-site policies, accounts managed by several administrators, or a widely
+audited project. Pocket ID + Tinyauth is then the recommended route.
 
-*Limites de la recherche* : les sites officiels (tinyauth.app, docs.pocket-id.org) n'étaient pas joignables depuis
-l'environnement de travail ; les informations proviennent des dépôts GitHub et de pages tierces. À revérifier avant de
-trancher, ces projets évoluent vite.
+*Research limits*: the official sites (tinyauth.app, docs.pocket-id.org) were unreachable from the working environment; the information comes
+from GitHub repositories and third-party pages. Re-check before deciding: these projects evolve quickly.
 
-Sources : [Pocket ID](https://github.com/pocket-id/pocket-id) ·
-[guide proxy Pocket ID](https://pocket-id.org/docs/guides/proxy-services) ·
+Sources: [Pocket ID](https://github.com/pocket-id/pocket-id) ·
+[Pocket ID proxy guide](https://pocket-id.org/docs/guides/proxy-services) ·
 [Tinyauth](https://github.com/tinyauthapp/tinyauth) ·
-[comparatif](https://sumguy.com/tinyauth-vs-pocket-id-vs-authelia/) ·
-[fil communauté Traefik](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396) ·
-[catalogue de plugins Traefik](https://plugins.traefik.io)
+[comparison](https://sumguy.com/tinyauth-vs-pocket-id-vs-authelia/) ·
+[Traefik community thread](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396) ·
+[Traefik plugin catalog](https://plugins.traefik.io)
 
-## Dépannage
+## Troubleshooting
 
-| Symptôme | Cause probable |
+| Symptom | Likely cause |
 |---|---|
-| `SecurityError` à la création de la passkey | La page n'est pas en HTTPS (hors `localhost`), ou `RP_ID` n'est pas le domaine de la page / un de ses parents. |
-| « passkey refusée » à la connexion | L'URL de la page de login n'est pas dans `RP_ORIGINS` (schéma, hôte **et port** exacts), ou la passkey a été créée pour un autre `RP_ID`. |
-| Import : `.rejected` | Lisez les logs : mauvais domaine, doublon, vérification utilisateur absente, nom/identifiant incohérents. |
-| Import ignoré | Le fichier doit se terminer par `.json` ; le conteneur (uid 65532) doit pouvoir lire/écrire `data/import/`. |
-| `permission denied` sur `/data` | `chown 65532 data` (podman rootless : `podman unshare chown 65532:65532 data`). |
-| Boucle de redirection en mode forward | `COOKIE_DOMAIN` ne couvre pas le site, ou l'accès à la page de login se fait en HTTP alors que le cookie est `Secure`. |
-| Jeton d'amorçage introuvable | `podman logs webauthnproxy`, ligne « Jeton d'amorçage de l'enrôlement ». |
+| `SecurityError` when creating the passkey | The page is not on HTTPS (outside `localhost`), or `RP_ID` is not the page's domain / one of its parents. |
+| "passkey refusée" at login | The login page URL is not in `RP_ORIGINS` (exact scheme, host **and port**), or the passkey was created for another `RP_ID`. |
+| Import: `.rejected` | Read the logs: wrong domain, duplicate, missing user verification, inconsistent name/ID. |
+| Import ignored | The file must end in `.json`; the container (uid 65532) must be able to read/write `data/import/`. |
+| `permission denied` on `/data` | `chown 65532 data` (rootless podman: `podman unshare chown 65532:65532 data`). |
+| Redirect loop in forward mode | `COOKIE_DOMAIN` does not cover the site, or the login page is reached over HTTP while the cookie is `Secure`. |
+| Can't find the bootstrap token | `podman logs webauthnproxy`, line "Jeton d'amorçage de l'enrôlement". |
 
-## Développement
+## Development
 
-Prérequis : Go (version de [`go.mod`](go.mod)) ; Node 22 et podman/docker pour les tests e2e.
+Requirements: Go (version in [`go.mod`](go.mod)); Node 22 and podman/docker for the e2e tests.
 
 ```sh
 make check   # gofmt + go vet + go test -race
-make e2e     # Chromium + authenticator virtuel ; mode forwardAuth contre un vrai Traefik
-make build   # binaire ./webauthnproxy
-make image   # image de conteneur
+make e2e     # Chromium + virtual authenticator; forwardAuth mode against a real Traefik
+make build   # ./webauthnproxy binary
+make image   # container image
 ```
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour l'organisation du code. Le projet utilise la bibliothèque
-[`go-webauthn/webauthn`](https://github.com/go-webauthn/webauthn) pour toute la cryptographie WebAuthn.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the code layout. All WebAuthn cryptography is done by the
+[`go-webauthn/webauthn`](https://github.com/go-webauthn/webauthn) library.
 
-## Contribuer, sécurité, licence
+## Contributing, security, license
 
-- Contributions bienvenues : [CONTRIBUTING.md](CONTRIBUTING.md) · [Code de conduite](CODE_OF_CONDUCT.md)
-- Vulnérabilités : [SECURITY.md](SECURITY.md) · Historique : [CHANGELOG.md](CHANGELOG.md)
-- Licence : [MIT](LICENSE)
+- Contributions welcome: [CONTRIBUTING.md](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md)
+- Vulnerabilities: [SECURITY.md](SECURITY.md) · History: [CHANGELOG.md](CHANGELOG.md)
+- License: [MIT](LICENSE)

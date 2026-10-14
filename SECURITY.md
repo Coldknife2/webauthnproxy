@@ -1,23 +1,22 @@
-# Politique de sécurité
+# Security policy
 
-## Signaler une vulnérabilité
+## Reporting a vulnerability
 
-**N'ouvrez pas d'issue publique.** Utilisez le signalement privé de GitHub :
-*onglet Security → Report a vulnerability* du dépôt
+**Please do not open a public issue.** Use GitHub's private reporting:
+the repository's *Security → Report a vulnerability* tab
 ([`coldknife2/webauthnproxy`](https://github.com/coldknife2/webauthnproxy/security/advisories/new)).
 
-Indiquez la version ou le commit, les étapes de reproduction et l'impact. Vous recevrez un accusé de réception
-dans un délai raisonnable ; un correctif et un avis sont publiés une fois la faille corrigée.
+Include the version or commit, reproduction steps and the impact. You will get an acknowledgement within a reasonable time;
+a fix and an advisory are published once the issue is resolved.
 
-## Versions supportées
+## Supported versions
 
-Le projet est jeune : seule la dernière version publiée (ou la branche `main`) reçoit des correctifs.
+The project is young: only the latest release (or the `main` branch) receives fixes.
 
-## Périmètre
+## Scope
 
-Dans le périmètre : contournement de l'authentification, fixation/forge de session, redirection ouverte,
-fuite du cookie de session ou de secrets, CSRF sur les endpoints d'enrôlement, import de passkey non validé.
+In scope: authentication bypass, session fixation/forgery, open redirect, leakage of the session cookie or secrets, CSRF on the
+enrollment endpoints, unvalidated passkey import.
 
-Hors périmètre (voir *Modèle de sécurité* dans le [README](README.md#modèle-de-sécurité)) : déni de service
-par volume de requêtes (utilisez la limitation de débit de votre reverse proxy), compromission du serveur
-ou du volume `/data`, vulnérabilités du site protégé lui-même.
+Out of scope (see the [Security model](README.md#security-model) in the README): denial of service through request volume
+(use your reverse proxy's rate limiting), compromise of the server or the `/data` volume, vulnerabilities in the protected site itself.

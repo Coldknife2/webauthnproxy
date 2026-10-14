@@ -1,41 +1,41 @@
-# Contribuer
+# Contributing
 
-Merci de votre intérêt ! Le projet vise à rester **petit et auditable** : un conteneur, un fichier de données,
-peu de dépendances. Les contributions qui préservent cette simplicité sont les bienvenues.
+Thanks for your interest! The project aims to stay **small and auditable**: one container, one data file, few dependencies.
+Contributions that preserve this simplicity are welcome.
 
-## Avant de commencer
+## Before you start
 
-- Ouvrez une issue pour discuter d'une nouvelle fonctionnalité avant d'écrire beaucoup de code.
-- Pour une faille de sécurité, suivez [SECURITY.md](SECURITY.md) (pas d'issue publique).
+- Open an issue to discuss a new feature before writing a lot of code.
+- For a security vulnerability, follow [SECURITY.md](SECURITY.md) (no public issue).
 
-## Environnement
+## Environment
 
-Prérequis : Go (version de `go.mod`), Node 22 et un runtime de conteneurs (podman ou docker) pour les tests e2e.
+Requirements: Go (version in `go.mod`), Node 22 and a container runtime (podman or docker) for the e2e tests.
 
 ```sh
 make check   # gofmt + go vet + go test -race
-make e2e     # Chromium + authenticator virtuel, et Traefik en conteneur
-make build   # binaire ./webauthnproxy
-make image   # image de conteneur
+make e2e     # Chromium + virtual authenticator, and Traefik in a container
+make build   # ./webauthnproxy binary
+make image   # container image
 ```
 
-## Règles
+## Rules
 
-- Code formaté par `gofmt`, `go vet` propre, tests verts.
-- Tout changement de comportement visible (variable d'environnement, port, format de fichier, sécurité) doit être
-  couvert par un test **et** documenté dans le [README](README.md) et le [CHANGELOG](CHANGELOG.md).
-- Ne jamais faire confiance à une donnée fournie par le client (en-têtes, fichiers d'import, `next`) : validez-la côté serveur.
-- Pas de nouvelle dépendance sans justification dans la PR.
-- Commits clairs, à l'impératif (« Ajoute… », « Corrige… »). Une PR = un sujet.
+- Code formatted with `gofmt`, `go vet` clean, tests green.
+- Any user-visible behavior change (environment variable, port, file format, security) must be covered by a test **and**
+  documented in the [README](README.md) and the [CHANGELOG](CHANGELOG.md).
+- Never trust client-supplied data (headers, import files, `next`): validate it server-side.
+- No new dependency without a justification in the PR.
+- Clear commits in the imperative mood ("Add…", "Fix…"). One PR, one topic.
 
-## Structure
+## Layout
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `main.go`, `config.go` | démarrage, serveurs, configuration par variables d'environnement |
-| `app.go` | handlers : proxy, forwardAuth, login, enrôlement automatique, outil statique |
-| `session.go` | cookies de session signés, cérémonies WebAuthn en mémoire |
-| `store.go` | base JSON (utilisateurs, passkeys) |
-| `import.go` | validation et import des fichiers JSON de l'outil statique |
-| `web/` | pages embarquées (login, enrôlement, `tool.html` autonome) |
-| `test/e2e/` | tests de bout en bout (Playwright) |
+| `main.go`, `config.go` | startup, servers, environment-variable configuration |
+| `app.go` | handlers: proxy, forwardAuth, login, automatic enrollment, static tool |
+| `session.go` | signed session cookies, in-memory WebAuthn ceremonies |
+| `store.go` | JSON database (users, passkeys) |
+| `import.go` | validation and import of the static tool's JSON files |
+| `web/` | embedded pages (login, enrollment, standalone `tool.html`) |
+| `test/e2e/` | end-to-end tests (Playwright) |

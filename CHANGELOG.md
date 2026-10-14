@@ -1,14 +1,14 @@
 # Changelog
 
-Format basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versionnement [SemVer](https://semver.org/lang/fr/).
+Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
-## [Non publié]
+## [Unreleased]
 
-### Ajouté
-- Mode **proxy** : reverse proxy (WebSocket inclus) qui exige une session obtenue par passkey ; l'utilisateur est transmis dans `X-Authenticated-User`, le cookie de session n'est pas transmis.
-- Mode **forwardAuth** (`MODE=forward`) pour Traefik : endpoint `/_wap/verify`, hôte de login dédié, cookie partagé sur `COOKIE_DOMAIN`, retour après login restreint à ce domaine.
-- **Enrôlement automatique** (`ENROLL_ENABLED`, port 8081) protégé par les passkeys existantes ; jeton d'amorçage affiché dans les logs tant qu'aucune passkey n'existe ; la dernière passkey ne peut pas être supprimée.
-- **Outil d'enrôlement statique** (`TOOL_ENABLED`, port 8082) : page HTML autonome produisant un JSON, à importer à la main dans `DATA_DIR/import/`.
-- Connexion sans nom d'utilisateur (passkeys *discoverable*), vérification utilisateur exigée par défaut (`USER_VERIFICATION`).
-- Base de données : un fichier JSON écrit de façon atomique.
-- Image distroless non-root, exemples Docker Compose / Traefik, tests unitaires et tests de bout en bout (Chromium + authenticator virtuel, Traefik réel).
+### Added
+- **Proxy** mode: reverse proxy (WebSockets included) requiring a passkey-obtained session; the user is passed in `X-Authenticated-User`, the session cookie is not forwarded.
+- **forwardAuth** mode (`MODE=forward`) for Traefik: `/_wap/verify` endpoint, dedicated login host, cookie shared on `COOKIE_DOMAIN`, post-login redirect restricted to that domain.
+- **Automatic enrollment** (`ENROLL_ENABLED`, port 8081) protected by existing passkeys; bootstrap token printed in the logs while no passkey exists; the last passkey cannot be deleted.
+- **Static enrollment tool** (`TOOL_ENABLED`, port 8082): standalone HTML page producing a JSON file to import by hand into `DATA_DIR/import/`.
+- Usernameless login (discoverable credentials), user verification required by default (`USER_VERIFICATION`).
+- Database: a single atomically written JSON file.
+- Non-root distroless image, Docker Compose / Traefik examples, unit tests and end-to-end tests (Chromium + virtual authenticator, real Traefik).

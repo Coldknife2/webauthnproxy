@@ -3,10 +3,11 @@
 //   IMAGE=localhost/webauthnproxy:examples (default; build with `make image-examples`)
 //   CHROMIUM=/path/to/chromium (optional). With podman, the compose provider needs the podman socket:
 //   this script starts `podman system service` itself when DOCKER_HOST is unset.
-const { chromium } = require("playwright");
 const { spawn, execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+// playwright is installed in test/e2e (npm install there)
+const { chromium } = require(require.resolve("playwright", { paths: [path.resolve(__dirname, "../e2e")] }));
 const assert = require("assert");
 
 const ROOT = path.resolve(__dirname, "../..");

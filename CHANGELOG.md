@@ -5,6 +5,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 ## [Unreleased]
 
 ### Added
+- English by default everywhere (code, logs, errors, web pages); French web pages with `?lang=fr` (remembered in the browser).
 - **Proxy** mode: reverse proxy (WebSockets included) requiring a passkey-obtained session; the user is passed in `X-Authenticated-User`, the session cookie is not forwarded.
 - **forwardAuth** mode (`MODE=forward`) for Traefik: `/_wap/verify` endpoint, dedicated login host, cookie shared on `COOKIE_DOMAIN`, post-login redirect restricted to that domain.
 - **Automatic enrollment** (`ENROLL_ENABLED`, port 8081) protected by existing passkeys; bootstrap token printed in the logs while no passkey exists; the last passkey cannot be deleted.

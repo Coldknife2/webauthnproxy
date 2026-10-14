@@ -1,6 +1,6 @@
 <!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>webauthnproxy — outil d'enrôlement</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>webauthnproxy — enrollment tool</title>
 <style>
  body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;color:#111;line-height:1.5}
  label{display:block;margin:.8rem 0 .2rem;font-weight:600}
@@ -12,30 +12,56 @@
  [hidden]{display:none!important}
 </style></head>
 <body>
- <h1>Outil d'enrôlement de passkey</h1>
- <p class="note">Cette page ne contacte aucun serveur. Elle crée une passkey dans votre navigateur et produit un fichier JSON
- (clé publique uniquement). La passkey ne donne aucun accès tant que ce fichier n'a pas été copié par un administrateur dans le
- dossier <code>import/</code> du proxy.</p>
- <label for="rp">Domaine (RP ID)</label>
+ <h1 data-i18n="h1">Passkey enrollment tool</h1>
+ <p class="note" data-i18n="intro">This page contacts no server. It creates a passkey in your browser and produces a JSON file
+ (public key only). The passkey grants no access until an administrator copies that file into the proxy's
+ <code>import/</code> folder.</p>
+ <label for="rp" data-i18n="rp">Domain (RP ID)</label>
  <input id="rp" placeholder="example.com" autocomplete="off">
- <label for="name">Nom d'utilisateur</label>
+ <label for="name" data-i18n="user">User name</label>
  <input id="name" maxlength="64" placeholder="remi" autocomplete="off">
- <button id="go">Créer la passkey</button>
+ <button id="go" data-i18n="create">Create the passkey</button>
  <div id="err"></div>
  <div id="res" hidden>
-   <label for="json">Fichier à importer</label>
+   <label for="json" data-i18n="file">File to import</label>
    <textarea id="json" readonly></textarea>
-   <button id="dl">Télécharger</button><button id="cp" class="alt">Copier</button>
-   <p class="note">Placez le fichier dans <code>&lt;DATA_DIR&gt;/import/</code> (ex. <code>cp remi.json data/import/</code>). Le proxy l'importe en quelques secondes.</p>
+   <button id="dl" data-i18n="download">Download</button><button id="cp" class="alt" data-i18n="copy">Copy</button>
+   <p class="note" data-i18n="where">Put the file in <code>&lt;DATA_DIR&gt;/import/</code> (e.g. <code>cp remi.json data/import/</code>). The proxy imports it within a few seconds.</p>
  </div>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
 const enc = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+// Minimal i18n: English by default, French with ?lang=fr (remembered in localStorage).
+const I18N = {
+  en: {},
+  fr: {
+    title: "webauthnproxy — outil d'enrôlement", h1: "Outil d'enrôlement de passkey",
+    intro: "Cette page ne contacte aucun serveur. Elle crée une passkey dans votre navigateur et produit un fichier JSON (clé publique uniquement). La passkey ne donne aucun accès tant que ce fichier n'a pas été copié par un administrateur dans le dossier <code>import/</code> du proxy.",
+    rp: "Domaine (RP ID)", user: "Nom d'utilisateur", create: "Créer la passkey", file: "Fichier à importer",
+    download: "Télécharger", copy: "Copier",
+    where: "Placez le fichier dans <code>&lt;DATA_DIR&gt;/import/</code> (ex. <code>cp remi.json data/import/</code>). Le proxy l'importe en quelques secondes.",
+    required: "Domaine et nom d'utilisateur requis (sans espaces autour, 64 caractères max).",
+  },
+};
+const LANG = (() => {
+  let l = new URLSearchParams(location.search).get("lang");
+  try { if (l in I18N) localStorage.setItem("wap_lang", l); else l = localStorage.getItem("wap_lang"); } catch (e) { /* storage unavailable */ }
+  return l in I18N ? l : "en";
+})();
+const en = { title: document.title, required: "Domain and user name are required (no surrounding spaces, 64 characters max)." };
+const t = (k) => (I18N[LANG][k] ?? en[k] ?? k);
+document.documentElement.lang = LANG;
+if (LANG !== "en") {
+  document.title = t("title");
+  for (const el of document.querySelectorAll("[data-i18n]")) el.innerHTML = I18N[LANG][el.dataset.i18n]; // static strings from the dictionary above
+}
+
 const q = new URLSearchParams(location.search).get("rpid");
 $("rp").value = q || location.hostname;
 
-// Même dérivation que le proxy : le même nom donne toujours le même utilisateur.
+// Same derivation as the proxy: the same name always designates the same user.
 async function userId(name) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("webauthnproxy:user:" + name)));
 }
@@ -43,9 +69,7 @@ async function userId(name) {
 $("go").onclick = async () => {
   $("err").textContent = ""; $("res").hidden = true;
   const rpId = $("rp").value.trim(), name = $("name").value;
-  if (!rpId || !name.trim() || name !== name.trim() || name.length > 64) {
-    $("err").textContent = "Domaine et nom d'utilisateur requis (sans espaces autour, 64 caractères max)."; return;
-  }
+  if (!rpId || !name.trim() || name !== name.trim() || name.length > 64) { $("err").textContent = t("required"); return; }
   try {
     const id = await userId(name);
     const cred = await navigator.credentials.create({ publicKey: {
@@ -73,7 +97,7 @@ $("go").onclick = async () => {
       a.download = name.replace(/[^\w.-]+/g, "_") + "-" + rpId + ".json"; a.click();
     };
     $("cp").onclick = () => navigator.clipboard.writeText($("json").value);
-  } catch (e) { $("err").textContent = e.name + " : " + e.message; }
+  } catch (e) { $("err").textContent = e.name + ": " + e.message; }
 };
 </script>
 </body></html>

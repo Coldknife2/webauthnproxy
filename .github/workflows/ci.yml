@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Formatage
+      - name: Formatting
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
@@ -34,12 +34,12 @@ jobs:
         with:
           node-version: 22
       - run: make build
-      - name: Dépendances e2e
+      - name: e2e dependencies
         working-directory: test/e2e
         run: |
           npm install
           npx playwright install --with-deps chromium
-      - name: e2e proxy + enrôlement + outil statique
+      - name: e2e proxy + enrollment + static tool
         working-directory: test/e2e
         run: npm run test:proxy
       - name: e2e forwardAuth (Traefik)

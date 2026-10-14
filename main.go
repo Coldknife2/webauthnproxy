@@ -25,11 +25,11 @@ func main() {
 	}
 	store, err := OpenStore(cfg.DataDir)
 	if err != nil {
-		log.Fatalf("base de données: %v", err)
+		log.Fatalf("database: %v", err)
 	}
 	secret, err := loadSecret(cfg.DataDir, cfg.SessionSecret)
 	if err != nil {
-		log.Fatalf("secret de session: %v", err)
+		log.Fatalf("session secret: %v", err)
 	}
 
 	uv := protocol.VerificationRequired
@@ -50,7 +50,7 @@ func main() {
 	}
 
 	if err := watchImports(store, filepath.Join(cfg.DataDir, "import"), cfg.RPID, uv == protocol.VerificationRequired); err != nil {
-		log.Fatalf("dossier d'import: %v", err)
+		log.Fatalf("import folder: %v", err)
 	}
 
 	app := &App{
@@ -75,16 +75,16 @@ func main() {
 	for _, s := range servers {
 		s.ReadHeaderTimeout = 10 * time.Second
 		go func() {
-			log.Printf("écoute sur %s", s.Addr)
+			log.Printf("listening on %s", s.Addr)
 			if err := s.ListenAndServe(); err != http.ErrServerClosed {
 				log.Fatal(err)
 			}
 		}()
 	}
 	if cfg.Mode == "forward" {
-		log.Printf("forwardAuth: GET %s/_wap/verify (%d utilisateur(s) enregistré(s))", cfg.Listen, store.Count())
+		log.Printf("forwardAuth: GET %s/_wap/verify (%d registered passkey(s))", cfg.Listen, store.Count())
 	} else {
-		log.Printf("proxy -> %s (%d utilisateur(s) enregistré(s))", cfg.Upstream, store.Count())
+		log.Printf("proxy -> %s (%d registered passkey(s))", cfg.Upstream, store.Count())
 	}
 
 	stop := make(chan os.Signal, 1)

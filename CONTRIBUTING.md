@@ -28,6 +28,12 @@ make image   # container image
 - No new dependency without a justification in the PR.
 - Clear commits in the imperative mood ("Add…", "Fix…"). One PR, one topic.
 
+## Translations
+
+Logs, errors and code are in English. The web pages are translated client-side: add a language by adding a dictionary to
+`web/i18n.js` (login and enrollment pages) and to the inline script of `web/tool.html`, then select it with `?lang=<code>`.
+The `/` page of the forwardAuth login host is translated in `app.go` (`home`). Keep English as the default.
+
 ## Layout
 
 | File | Role |

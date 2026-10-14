@@ -9,25 +9,25 @@ import (
 	"time"
 )
 
-// Config est lu uniquement depuis les variables d'environnement.
+// Config is read from environment variables only.
 type Config struct {
-	Mode          string        // MODE : "proxy" (défaut) ou "forward" (forwardAuth Traefik)
-	LoginURL      *url.URL      // LOGIN_URL (mode forward) : URL publique de la page de login
-	CookieDomain  string        // COOKIE_DOMAIN (mode forward) : domaine parent du cookie de session
-	Upstream      *url.URL      // UPSTREAM (mode proxy) : site à protéger
-	Listen        string        // LISTEN : port public du proxy
-	EnrollEnabled bool          // ENROLL_ENABLED : enrôlement automatique (protégé par passkey)
-	EnrollListen  string        // ENROLL_LISTEN : port de l'enrôlement automatique
-	ToolEnabled   bool          // TOOL_ENABLED : outil d'enrôlement statique (import manuel)
-	ToolListen    string        // TOOL_LISTEN : port de l'outil statique
-	RPID          string        // RP_ID : domaine WebAuthn (ex: example.com)
+	Mode          string        // MODE: "proxy" (default) or "forward" (Traefik forwardAuth)
+	LoginURL      *url.URL      // LOGIN_URL (forward mode): public URL of the login page
+	CookieDomain  string        // COOKIE_DOMAIN (forward mode): parent domain of the session cookie
+	Upstream      *url.URL      // UPSTREAM (proxy mode): site to protect
+	Listen        string        // LISTEN: proxy port
+	EnrollEnabled bool          // ENROLL_ENABLED: automatic enrollment (passkey-protected)
+	EnrollListen  string        // ENROLL_LISTEN: automatic enrollment port
+	ToolEnabled   bool          // TOOL_ENABLED: static enrollment tool (manual import)
+	ToolListen    string        // TOOL_LISTEN: static tool port
+	RPID          string        // RP_ID: WebAuthn domain (e.g. example.com)
 	RPName        string        // RP_NAME
-	RPOrigins     []string      // RP_ORIGINS : origines autorisées (ex: https://app.example.com)
+	RPOrigins     []string      // RP_ORIGINS: allowed origins (e.g. https://app.example.com)
 	DataDir       string        // DATA_DIR
-	SessionSecret []byte        // SESSION_SECRET (sinon généré et stocké dans DATA_DIR)
+	SessionSecret []byte        // SESSION_SECRET (otherwise generated and stored in DATA_DIR)
 	SessionTTL    time.Duration // SESSION_TTL
-	PreserveHost  bool          // PRESERVE_HOST : transmet le Host d'origine à l'upstream
-	UserHeader    string        // USER_HEADER : header envoyé à l'upstream avec le nom de l'utilisateur
+	PreserveHost  bool          // PRESERVE_HOST: forward the client's Host to the upstream
+	UserHeader    string        // USER_HEADER: header carrying the user name to the upstream
 }
 
 func getenv(k, def string) string {
@@ -61,29 +61,29 @@ func LoadConfig() (*Config, error) {
 	case "proxy":
 		up := getenv("UPSTREAM", "")
 		if up == "" {
-			return nil, fmt.Errorf("UPSTREAM est obligatoire en mode proxy (ex: http://monsite:80)")
+			return nil, fmt.Errorf("UPSTREAM is required in proxy mode (e.g. http://mysite:80)")
 		}
 		u, err := url.Parse(up)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return nil, fmt.Errorf("UPSTREAM invalide: %q", up)
+			return nil, fmt.Errorf("invalid UPSTREAM: %q", up)
 		}
 		c.Upstream = u
 	case "forward":
 		lu, err := url.Parse(getenv("LOGIN_URL", ""))
 		if err != nil || (lu.Scheme != "http" && lu.Scheme != "https") || lu.Host == "" {
-			return nil, fmt.Errorf("LOGIN_URL est obligatoire en mode forward (ex: https://auth.example.com/_wap/login)")
+			return nil, fmt.Errorf("LOGIN_URL is required in forward mode (e.g. https://auth.example.com/_wap/login)")
 		}
 		c.LoginURL = lu
 		c.CookieDomain = strings.ToLower(strings.TrimPrefix(getenv("COOKIE_DOMAIN", ""), "."))
 		if c.CookieDomain == "" {
-			return nil, fmt.Errorf("COOKIE_DOMAIN est obligatoire en mode forward (ex: example.com)")
+			return nil, fmt.Errorf("COOKIE_DOMAIN is required in forward mode (e.g. example.com)")
 		}
 	default:
-		return nil, fmt.Errorf("MODE invalide: %q (proxy ou forward)", c.Mode)
+		return nil, fmt.Errorf("invalid MODE: %q (proxy or forward)", c.Mode)
 	}
 
 	if c.RPID == "" {
-		return nil, fmt.Errorf("RP_ID est obligatoire (domaine, ex: example.com ou localhost)")
+		return nil, fmt.Errorf("RP_ID is required (domain, e.g. example.com or localhost)")
 	}
 	for _, o := range strings.Split(os.Getenv("RP_ORIGINS"), ",") {
 		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
@@ -91,18 +91,18 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 	if len(c.RPOrigins) == 0 {
-		return nil, fmt.Errorf("RP_ORIGINS est obligatoire (liste séparée par des virgules, ex: https://app.example.com)")
+		return nil, fmt.Errorf("RP_ORIGINS is required (comma-separated list, e.g. https://app.example.com)")
 	}
 
 	ttl, err := time.ParseDuration(getenv("SESSION_TTL", "12h"))
 	if err != nil || ttl <= 0 {
-		return nil, fmt.Errorf("SESSION_TTL invalide")
+		return nil, fmt.Errorf("invalid SESSION_TTL")
 	}
 	c.SessionTTL = ttl
 
 	if s := os.Getenv("SESSION_SECRET"); s != "" {
 		if len(s) < 16 {
-			return nil, fmt.Errorf("SESSION_SECRET trop court (16 caractères minimum)")
+			return nil, fmt.Errorf("SESSION_SECRET too short (16 characters minimum)")
 		}
 		c.SessionSecret = []byte(s)
 	}

@@ -12,7 +12,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 )
 
-// authData construit un authenticatorData d'enregistrement avec une clé ES256 valide.
+// authData builds a registration authenticatorData with a valid ES256 key.
 func authData(t *testing.T, rpID string, flags byte, credID []byte) []byte {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -54,7 +54,7 @@ func TestParseImportOK(t *testing.T) {
 		t.Fatal(err)
 	}
 	if u.Name != "remi" || string(c.ID) != "credential-id-1" || len(c.PublicKey) == 0 || !c.Flags.UserVerified {
-		t.Fatalf("résultat inattendu: %+v %+v", u, c)
+		t.Fatalf("unexpected result: %+v %+v", u, c)
 	}
 }
 
@@ -65,23 +65,23 @@ func TestParseImportRejects(t *testing.T) {
 		rpID  string
 		reqUV bool
 	}{
-		"mauvais domaine":      {good, "autre.com", true},
-		"sans UV exigée":       {importJSON(t, "remi", "example.com", 0x01|0x40), "example.com", true},
-		"sans clé (pas de AT)": {importJSON(t, "remi", "example.com", 0x01|0x04), "example.com", true},
-		"JSON invalide":        {[]byte("{"), "example.com", true},
+		"wrong domain":        {good, "autre.com", true},
+		"missing required UV": {importJSON(t, "remi", "example.com", 0x01|0x40), "example.com", true},
+		"no key (no AT flag)": {importJSON(t, "remi", "example.com", 0x01|0x04), "example.com", true},
+		"invalid JSON":        {[]byte("{"), "example.com", true},
 	}
 	for name, c := range cases {
 		if _, _, err := parseImport(c.raw, c.rpID, c.reqUV); err == nil {
-			t.Errorf("%s: accepté à tort", name)
+			t.Errorf("%s: wrongly accepted", name)
 		}
 	}
-	// identifiant utilisateur incohérent avec le nom
+	// user ID inconsistent with the name
 	var f importFile
 	_ = json.Unmarshal(good, &f)
 	f.User.Name = "autre"
 	bad, _ := json.Marshal(f)
 	if _, _, err := parseImport(bad, "example.com", true); err == nil {
-		t.Error("identifiant utilisateur incohérent accepté")
+		t.Error("inconsistent user ID accepted")
 	}
 }
 
@@ -90,15 +90,15 @@ func TestImportDirRenamesAndDedups(t *testing.T) {
 	store, _ := OpenStore(data)
 	write := func(name string, b []byte) { _ = writeFile(dir+"/"+name, b) }
 	write("a.json", importJSON(t, "remi", "example.com", flagsUPUVAT))
-	write("b.json", importJSON(t, "remi", "example.com", flagsUPUVAT)) // même credential -> doublon
-	write("c.json", []byte("pas du json"))
+	write("b.json", importJSON(t, "remi", "example.com", flagsUPUVAT)) // same credential -> duplicate
+	write("c.json", []byte("not json"))
 	importDir(store, dir, "example.com", true)
 	if store.CredentialCount() != 1 {
-		t.Fatalf("attendu 1 passkey, obtenu %d", store.CredentialCount())
+		t.Fatalf("expected 1 passkey, got %d", store.CredentialCount())
 	}
 	for _, n := range []string{"a.json.imported", "b.json.rejected", "c.json.rejected"} {
 		if !fileExists(dir + "/" + n) {
-			t.Errorf("%s manquant", n)
+			t.Errorf("%s missing", n)
 		}
 	}
 }

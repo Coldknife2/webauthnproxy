@@ -3,27 +3,27 @@ RUNTIME  ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo doc
 
 .PHONY: build test vet fmt check e2e image clean help
 
-help: ## Liste les cibles
+help: ## List targets
 	@grep -E '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-8s %s\n", $$1, $$2}'
 
-build: ## Compile le binaire
+build: ## Build the binary
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BIN) .
 
-test: ## Tests unitaires (avec détecteur de race)
+test: ## Unit tests (with the race detector)
 	go test -race ./...
 
 vet: ## go vet
 	go vet ./...
 
-fmt: ## Vérifie le formatage (échoue si gofmt a des changements à faire)
-	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt requis"; exit 1; }
+fmt: ## Check formatting (fails if gofmt has changes to make)
+	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt required"; exit 1; }
 
-check: fmt vet test ## Tout ce que la CI vérifie hors e2e
+check: fmt vet test ## Everything CI checks except e2e
 
-e2e: build ## Tests de bout en bout (Chromium + Traefik en conteneur)
+e2e: build ## End-to-end tests (Chromium + Traefik in a container)
 	cd test/e2e && npm install && npx playwright install chromium && RUNTIME=$(RUNTIME) npm test
 
-image: ## Construit l'image de conteneur
+image: ## Build the container image
 	$(RUNTIME) build -t $(BIN) .
 
 clean:

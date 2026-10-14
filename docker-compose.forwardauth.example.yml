@@ -1,5 +1,5 @@
-# Mode forwardAuth : un seul webauthnproxy protège plusieurs sites derrière Traefik.
-# Traefik -> (verify) webauthnproxy ; Traefik -> site web directement.
+# forwardAuth mode: a single webauthnproxy protects several sites behind Traefik.
+# Traefik -> (verify) webauthnproxy ; Traefik -> website directly.
 services:
   traefik:
     image: docker.io/library/traefik:v3
@@ -20,28 +20,28 @@ services:
     environment:
       MODE: forward
       LOGIN_URL: https://auth.example.com/_wap/login
-      COOKIE_DOMAIN: example.com            # cookie partagé par tous les sous-domaines
+      COOKIE_DOMAIN: example.com            # cookie shared by all subdomains
       RP_ID: example.com
-      RP_ORIGINS: https://auth.example.com  # origine de la page de login (+ celle d'enrôlement si activé)
-      # ENROLL_ENABLED: "true"   # enrôlement automatique (8081) ; TOOL_ENABLED=true pour l'outil statique (8082)
+      RP_ORIGINS: https://auth.example.com  # origin of the login page (+ the enrollment page's if enabled)
+      # ENROLL_ENABLED: "true"   # automatic enrollment (8081); TOOL_ENABLED=true for the static tool (8082)
     volumes:
       - ./data:/data
     labels:
       - traefik.enable=true
-      # Hôte de login (public)
+      # Login host (public)
       - traefik.http.routers.auth.rule=Host(`auth.example.com`)
       - traefik.http.routers.auth.entrypoints=websecure
       - traefik.http.routers.auth.tls.certresolver=le
       - traefik.http.services.auth.loadbalancer.server.port=8080
-      # Middleware réutilisable sur n'importe quel routeur
+      # Reusable middleware, attach it to any router
       - traefik.http.middlewares.passkey.forwardauth.address=http://webauthnproxy:8080/_wap/verify
       - traefik.http.middlewares.passkey.forwardauth.authResponseHeaders=X-Authenticated-User
 
-  monsite:
+  mysite:
     image: docker.io/library/nginx:alpine
     labels:
       - traefik.enable=true
-      - traefik.http.routers.monsite.rule=Host(`app.example.com`)
-      - traefik.http.routers.monsite.entrypoints=websecure
-      - traefik.http.routers.monsite.tls.certresolver=le
-      - traefik.http.routers.monsite.middlewares=passkey   # <- la protection
+      - traefik.http.routers.mysite.rule=Host(`app.example.com`)
+      - traefik.http.routers.mysite.entrypoints=websecure
+      - traefik.http.routers.mysite.tls.certresolver=le
+      - traefik.http.routers.mysite.middlewares=passkey   # <- the protection

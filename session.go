@@ -16,7 +16,7 @@ import (
 
 const cookieName = "wap_session"
 
-// Sessions : cookie signé HMAC sans état serveur (userID.name.expiry.sig).
+// Sessions: stateless HMAC-signed cookie (name.expiry.signature).
 type Sessions struct {
 	secret []byte
 	ttl    time.Duration
@@ -51,7 +51,7 @@ func (s *Sessions) New(userName string) string {
 	return payload + "." + s.sign(payload)
 }
 
-// Verify retourne le nom d'utilisateur si le cookie est valide.
+// Verify returns the user name if the cookie is valid.
 func (s *Sessions) Verify(v string) (string, error) {
 	parts := strings.Split(v, ".")
 	if len(parts) != 3 {
@@ -63,7 +63,7 @@ func (s *Sessions) Verify(v string) (string, error) {
 	}
 	exp, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || time.Now().Unix() > exp {
-		return "", errors.New("expirée")
+		return "", errors.New("expired")
 	}
 	name, err := b64.DecodeString(parts[0])
 	if err != nil {
@@ -72,7 +72,7 @@ func (s *Sessions) Verify(v string) (string, error) {
 	return string(name), nil
 }
 
-// Ceremonies garde en mémoire les données de cérémonie WebAuthn (usage unique, TTL court).
+// Ceremonies keeps WebAuthn ceremony data in memory (single use, short TTL).
 type Ceremonies[T any] struct {
 	mu sync.Mutex
 	m  map[string]ceremony[T]
@@ -101,7 +101,7 @@ func (c *Ceremonies[T]) Put(v T) string {
 	return id
 }
 
-// Take récupère et consomme la cérémonie.
+// Take retrieves and consumes the ceremony.
 func (c *Ceremonies[T]) Take(id string) (T, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

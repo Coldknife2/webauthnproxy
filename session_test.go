@@ -18,14 +18,14 @@ func TestSessionRejects(t *testing.T) {
 	tok := s.New("remi")
 	other := &Sessions{secret: []byte("fedcba9876543210"), ttl: time.Hour}
 	if _, err := other.Verify(tok); err == nil {
-		t.Error("signature d'un autre secret acceptée")
+		t.Error("signature from another secret accepted")
 	}
 	if _, err := s.Verify(tok + "x"); err == nil {
-		t.Error("signature altérée acceptée")
+		t.Error("tampered signature accepted")
 	}
 	expired := &Sessions{secret: s.secret, ttl: -time.Minute}
 	if _, err := s.Verify(expired.New("remi")); err == nil {
-		t.Error("session expirée acceptée")
+		t.Error("expired session accepted")
 	}
 }
 
@@ -33,9 +33,9 @@ func TestCeremonyOneShot(t *testing.T) {
 	c := NewCeremonies[string]()
 	id := c.Put("x")
 	if v, ok := c.Take(id); !ok || v != "x" {
-		t.Fatal("première lecture échouée")
+		t.Fatal("first read failed")
 	}
 	if _, ok := c.Take(id); ok {
-		t.Fatal("cérémonie réutilisable")
+		t.Fatal("ceremony is reusable")
 	}
 }

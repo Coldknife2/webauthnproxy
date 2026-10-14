@@ -10,7 +10,7 @@
 No passwords, no directory, no OIDC provider to deploy. Put it in front of a site as a reverse proxy, or behind Traefik as a
 `forwardAuth` service that protects several sites at once.
 
-> **Note:** the web pages and log messages are currently in French (an English UI is planned). Where this README quotes a log line, it quotes the French text.
+> **Languages:** logs, errors and web pages are in English. The web pages also have a French translation: add `?lang=fr` to any page URL (the choice is remembered by the browser). Other languages can be added in `web/i18n.js` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Table of contents
 
@@ -69,7 +69,7 @@ podman run -d --name webauthnproxy \
   -e ENROLL_ENABLED=true \
   webauthnproxy
 
-podman logs webauthnproxy        # prints the bootstrap token ("Jeton d'amorçage de l'enrôlement : …")
+podman logs webauthnproxy        # prints the bootstrap token ("Enrollment bootstrap token: …")
 ```
 
 1. Open <http://localhost:8081>, enter the **bootstrap token** and a name: this creates the first passkey.
@@ -143,7 +143,7 @@ The page `http(s)://<host>:8081/` lets you add and delete passkeys.
 
 To enroll **without exposing any write API**: a standalone HTML page ([`web/tool.html`](web/tool.html)) that contacts no server.
 
-1. Open the tool (`http(s)://<host>:8082/`, domain pre-filled with `RP_ID`), enter a name and click **Créer la passkey** (create the passkey).
+1. Open the tool (`http(s)://<host>:8082/`, domain pre-filled with `RP_ID`), enter a name and click **Create the passkey**.
 2. The tool shows a **JSON file** (public key and metadata, no secret): download it.
 3. Copy it **by hand** into the proxy's import folder: `cp remi-example.com.json data/import/`
    (with a container: `podman cp remi-example.com.json webauthnproxy:/data/import/`).
@@ -273,12 +273,12 @@ Sources: [Pocket ID](https://github.com/pocket-id/pocket-id) ·
 | Symptom | Likely cause |
 |---|---|
 | `SecurityError` when creating the passkey | The page is not on HTTPS (outside `localhost`), or `RP_ID` is not the page's domain / one of its parents. |
-| "passkey refusée" at login | The login page URL is not in `RP_ORIGINS` (exact scheme, host **and port**), or the passkey was created for another `RP_ID`. |
+| "passkey rejected" at login | The login page URL is not in `RP_ORIGINS` (exact scheme, host **and port**), or the passkey was created for another `RP_ID`. |
 | Import: `.rejected` | Read the logs: wrong domain, duplicate, missing user verification, inconsistent name/ID. |
 | Import ignored | The file must end in `.json`; the container (uid 65532) must be able to read/write `data/import/`. |
 | `permission denied` on `/data` | `chown 65532 data` (rootless podman: `podman unshare chown 65532:65532 data`). |
 | Redirect loop in forward mode | `COOKIE_DOMAIN` does not cover the site, or the login page is reached over HTTP while the cookie is `Secure`. |
-| Can't find the bootstrap token | `podman logs webauthnproxy`, line "Jeton d'amorçage de l'enrôlement". |
+| Can't find the bootstrap token | `podman logs webauthnproxy`, line "Enrollment bootstrap token". |
 
 ## Development
 

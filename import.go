@@ -21,7 +21,7 @@ const (
 	maxImportSize = 64 << 10
 )
 
-// importFile est le format produit par l'outil d'enrôlement statique (web/tool.html).
+// importFile is the format produced by the static enrollment tool (web/tool.html).
 type importFile struct {
 	Version int    `json:"version"`
 	RPID    string `json:"rpId"`
@@ -36,52 +36,52 @@ type importFile struct {
 	} `json:"credential"`
 }
 
-// parseImport valide un fichier d'import et construit l'utilisateur et la passkey correspondants.
-// authenticatorData contient la clé publique (COSE) et les drapeaux : tout est relu et vérifié ici,
-// rien n'est pris sur parole (domaine, identifiant utilisateur, clé, vérification utilisateur).
+// parseImport validates an import file and builds the matching user and passkey.
+// authenticatorData carries the public key (COSE) and the flags: everything is re-read and
+// verified here, nothing is taken on trust (domain, user ID, key, user verification).
 func parseImport(raw []byte, rpID string, requireUV bool) (*User, *webauthn.Credential, error) {
 	var f importFile
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, nil, fmt.Errorf("JSON invalide: %w", err)
+		return nil, nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	if f.Version != importVersion {
-		return nil, nil, fmt.Errorf("version %d non supportée", f.Version)
+		return nil, nil, fmt.Errorf("unsupported version %d", f.Version)
 	}
 	name := strings.TrimSpace(f.User.Name)
 	if name == "" || len(name) > 64 || name != f.User.Name {
-		return nil, nil, errors.New("nom d'utilisateur invalide (1 à 64 caractères, sans espaces autour)")
+		return nil, nil, errors.New("invalid user name (1 to 64 characters, no surrounding spaces)")
 	}
 	uid, err := b64.DecodeString(f.User.ID)
 	if err != nil || string(uid) != string(userIDFor(name)) {
-		return nil, nil, errors.New("identifiant utilisateur incohérent avec le nom")
+		return nil, nil, errors.New("user ID inconsistent with the name")
 	}
 	credID, err := b64.DecodeString(f.Credential.ID)
 	if err != nil || len(credID) == 0 {
-		return nil, nil, errors.New("identifiant de passkey invalide")
+		return nil, nil, errors.New("invalid passkey ID")
 	}
 	ad, err := b64.DecodeString(f.Credential.AuthenticatorData)
 	if err != nil {
-		return nil, nil, errors.New("authenticatorData invalide")
+		return nil, nil, errors.New("invalid authenticatorData")
 	}
 	var data protocol.AuthenticatorData
 	if err := data.Unmarshal(ad); err != nil {
-		return nil, nil, fmt.Errorf("authenticatorData illisible: %w", err)
+		return nil, nil, fmt.Errorf("unreadable authenticatorData: %w", err)
 	}
 	want := sha256.Sum256([]byte(rpID))
 	if string(data.RPIDHash) != string(want[:]) {
-		return nil, nil, fmt.Errorf("la passkey n'a pas été créée pour le domaine %q (RP_ID du proxy)", rpID)
+		return nil, nil, fmt.Errorf("the passkey was not created for domain %q (the proxy's RP_ID)", rpID)
 	}
 	if !data.Flags.HasUserPresent() || !data.Flags.HasAttestedCredentialData() {
-		return nil, nil, errors.New("authenticatorData ne contient pas de passkey")
+		return nil, nil, errors.New("authenticatorData does not contain a passkey")
 	}
 	if requireUV && !data.Flags.HasUserVerified() {
-		return nil, nil, errors.New("vérification utilisateur absente (USER_VERIFICATION=required)")
+		return nil, nil, errors.New("user verification missing (USER_VERIFICATION=required)")
 	}
 	if string(data.AttData.CredentialID) != string(credID) {
-		return nil, nil, errors.New("identifiant de passkey incohérent avec authenticatorData")
+		return nil, nil, errors.New("passkey ID inconsistent with authenticatorData")
 	}
 	if _, err := webauthncose.ParsePublicKey(data.AttData.CredentialPublicKey); err != nil {
-		return nil, nil, fmt.Errorf("clé publique invalide: %w", err)
+		return nil, nil, fmt.Errorf("invalid public key: %w", err)
 	}
 	var transports []protocol.AuthenticatorTransport
 	for _, t := range f.Credential.Transports {
@@ -98,8 +98,8 @@ func parseImport(raw []byte, rpID string, requireUV bool) (*User, *webauthn.Cred
 	return &User{ID: uid, Name: name}, cred, nil
 }
 
-// importDir traite les fichiers *.json déposés dans dir : un fichier accepté est renommé en
-// .imported, un fichier refusé en .rejected (la raison est dans les logs).
+// importDir processes the *.json files dropped into dir: an accepted file is renamed to
+// .imported, a refused one to .rejected (the reason is in the logs).
 func importDir(store *Store, dir, rpID string, requireUV bool) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
@@ -111,12 +111,12 @@ func importDir(store *Store, dir, rpID string, requireUV bool) {
 		suffix := ".imported"
 		if err != nil {
 			suffix = ".rejected"
-			log.Printf("import %s refusé: %v", e.Name(), err)
+			log.Printf("import %s rejected: %v", e.Name(), err)
 		} else {
-			log.Printf("import %s: passkey ajoutée", e.Name())
+			log.Printf("import %s: passkey added", e.Name())
 		}
 		if err := os.Rename(p, p+suffix); err != nil {
-			log.Printf("import %s: renommage impossible: %v", e.Name(), err)
+			log.Printf("import %s: cannot rename: %v", e.Name(), err)
 		}
 	}
 }
@@ -127,7 +127,7 @@ func importOne(store *Store, path, rpID string, requireUV bool) error {
 		return err
 	}
 	if fi.Size() > maxImportSize {
-		return errors.New("fichier trop volumineux")
+		return errors.New("file too large")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -140,7 +140,7 @@ func importOne(store *Store, path, rpID string, requireUV bool) error {
 	return store.AddCredential(store.GetOrNew(user.Name), cred)
 }
 
-// watchImports scrute le dossier d'import (démarrage puis toutes les 5 s).
+// watchImports polls the import folder (at startup, then every 5 s).
 func watchImports(store *Store, dir, rpID string, requireUV bool) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

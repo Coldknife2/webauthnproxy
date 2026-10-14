@@ -37,7 +37,7 @@ type App struct {
 	enroll   *Ceremonies[enrollState]
 
 	bootMu sync.Mutex
-	boot   string // jeton d'amorçage de l'enrôlement (base vide)
+	boot   string // enrollment bootstrap token (empty database)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -71,6 +71,7 @@ func (a *App) publicHandler() http.Handler {
 	mux.HandleFunc("GET "+prefix+"/login", a.staticPage("login.html"))
 	mux.HandleFunc("GET "+prefix+"/app.js", a.staticPage("app.js"))
 	mux.HandleFunc("GET "+prefix+"/login.js", a.staticPage("login.js"))
+	mux.HandleFunc("GET "+prefix+"/i18n.js", a.staticPage("i18n.js"))
 	mux.HandleFunc("POST "+prefix+"/login/begin", a.loginBegin)
 	mux.HandleFunc("POST "+prefix+"/login/finish", a.loginFinish)
 	mux.HandleFunc("POST "+prefix+"/logout", a.logout)
@@ -91,7 +92,7 @@ func (a *App) cookie(r *http.Request, value string, maxAge int) *http.Cookie {
 	}
 }
 
-// verify est l'endpoint forwardAuth de Traefik : 2xx = autorisé, sinon la réponse est renvoyée au client.
+// verify is Traefik's forwardAuth endpoint: 2xx = allowed, otherwise the response is returned to the client.
 func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.currentUser(r)
 	if ok {
@@ -105,21 +106,26 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, a.cfg.LoginURL.String()+"?next="+url.QueryEscape(orig), http.StatusFound)
 		return
 	}
-	http.Error(w, "authentification requise", http.StatusUnauthorized)
+	http.Error(w, "authentication required", http.StatusUnauthorized)
 }
 
-// home : page de l'hôte d'authentification en mode forward.
+// home is the authentication host's landing page in forward mode.
 func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.currentUser(r)
 	if !ok {
 		http.Redirect(w, r, prefix+"/login", http.StatusFound)
 		return
 	}
+	signedIn, signOut := "Signed in as", "Sign out"
+	if r.URL.Query().Get("lang") == "fr" {
+		signedIn, signOut = "Connecté en tant que", "Se déconnecter"
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Session</title><body style="font-family:system-ui;text-align:center;margin-top:20vh"><p>Connecté en tant que <b>%s</b></p><form method=post action="%s/logout"><button>Se déconnecter</button></form>`, html.EscapeString(name), prefix)
+	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Session</title><body style="font-family:system-ui;text-align:center;margin-top:20vh"><p>%s <b>%s</b></p><form method=post action="%s/logout"><button>%s</button></form>`,
+		signedIn, html.EscapeString(name), prefix, signOut)
 }
 
-// safeNext n'autorise que les chemins locaux et, en mode forward, les URLs du domaine du cookie.
+// safeNext only allows local paths and, in forward mode, URLs within the cookie domain.
 func (a *App) safeNext(next string) string {
 	if next == "" {
 		return "/"
@@ -147,7 +153,7 @@ func (a *App) currentUser(r *http.Request) (string, bool) {
 		return "", false
 	}
 	name, err := a.sessions.Verify(c.Value)
-	if err != nil || a.store.ByName(name) == nil { // utilisateur supprimé => session invalide
+	if err != nil || a.store.ByName(name) == nil { // deleted user => invalid session
 		return "", false
 	}
 	return name, true
@@ -161,10 +167,10 @@ func (a *App) requireAuth(next http.Handler) http.Handler {
 				http.Redirect(w, r, prefix+"/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 				return
 			}
-			http.Error(w, "authentification requise", http.StatusUnauthorized)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
-		// Le nom d'utilisateur est transmis dans un header ; on écrase toute valeur fournie par le client.
+		// The user name is passed in a header; any client-supplied value is overwritten.
 		r.Header.Set(a.cfg.UserHeader, name)
 		next.ServeHTTP(w, r)
 	})
@@ -189,7 +195,7 @@ func (a *App) reverseProxy() http.Handler {
 				r.Header.Set("X-Forwarded-Proto", "http")
 			}
 		}
-		// Le cookie de session ne doit pas fuiter vers l'upstream.
+		// The session cookie must not leak to the upstream.
 		cookies := r.Cookies()
 		r.Header.Del("Cookie")
 		for _, c := range cookies {
@@ -213,18 +219,18 @@ func (a *App) loginBegin(w http.ResponseWriter, r *http.Request) {
 func (a *App) loginFinish(w http.ResponseWriter, r *http.Request) {
 	sd, ok := a.login.Take(r.URL.Query().Get("cid"))
 	if !ok {
-		jsonErr(w, 400, "cérémonie expirée, recommencez")
+		jsonErr(w, 400, "ceremony expired, please start again")
 		return
 	}
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
 		if u := a.store.ByID(userHandle); u != nil {
 			return u, nil
 		}
-		return nil, errors.New("utilisateur inconnu")
+		return nil, errors.New("unknown user")
 	}
 	user, cred, err := a.wa.FinishPasskeyLogin(handler, sd, r)
 	if err != nil {
-		jsonErr(w, 401, "passkey refusée")
+		jsonErr(w, 401, "passkey rejected")
 		return
 	}
 	u := user.(*User)
@@ -233,21 +239,22 @@ func (a *App) loginFinish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"next": a.safeNext(r.URL.Query().Get("next"))})
 }
 
-// ---------------------------------------------------------------- enrôlement automatique
+// ---------------------------------------------------------------- automatic enrollment
 
-// enrollHandler sert l'enrôlement automatique. Il est protégé par les passkeys existantes
-// (session obtenue par la page de connexion de ce même port). Tant qu'aucune passkey n'existe,
-// un jeton d'amorçage affiché dans les logs au démarrage autorise la création de la première.
+// enrollHandler serves automatic enrollment. It is protected by the existing passkeys
+// (session obtained through this same port's login page). While no passkey exists, a
+// bootstrap token printed in the logs at startup authorizes creating the first one.
 func (a *App) enrollHandler() http.Handler {
 	mux := http.NewServeMux()
-	// Connexion (ouverte) : mêmes endpoints que le proxy public.
+	// Login (open): same endpoints as the public proxy.
 	mux.HandleFunc("GET "+prefix+"/login", a.staticPage("login.html"))
 	mux.HandleFunc("GET "+prefix+"/app.js", a.staticPage("app.js"))
 	mux.HandleFunc("GET "+prefix+"/login.js", a.staticPage("login.js"))
+	mux.HandleFunc("GET "+prefix+"/i18n.js", a.staticPage("i18n.js"))
 	mux.HandleFunc("POST "+prefix+"/login/begin", a.loginBegin)
 	mux.HandleFunc("POST "+prefix+"/login/finish", a.loginFinish)
 	mux.HandleFunc("POST "+prefix+"/logout", a.logout)
-	// Page et API (protégées).
+	// Page and API (protected).
 	mux.HandleFunc("GET "+prefix+"/enroll.js", a.staticPage("enroll.js"))
 	mux.Handle("GET /{$}", a.enrollGuard(a.staticPage("enroll.html")))
 	mux.Handle("GET /api/state", a.enrollGuard(http.HandlerFunc(a.apiState)))
@@ -258,7 +265,7 @@ func (a *App) enrollHandler() http.Handler {
 	return mux
 }
 
-// bootstrapToken retourne le jeton d'amorçage (créé et journalisé à la demande) tant que la base est vide.
+// bootstrapToken returns the bootstrap token (created and logged on demand) while the database is empty.
 func (a *App) bootstrapToken() string {
 	a.bootMu.Lock()
 	defer a.bootMu.Unlock()
@@ -266,7 +273,7 @@ func (a *App) bootstrapToken() string {
 		b := make([]byte, 18)
 		_, _ = rand.Read(b)
 		a.boot = b64.EncodeToString(b)
-		log.Printf("Aucune passkey enregistrée. Jeton d'amorçage de l'enrôlement : %s", a.boot)
+		log.Printf("No passkey registered. Enrollment bootstrap token: %s", a.boot)
 	}
 	return a.boot
 }
@@ -280,17 +287,17 @@ func (a *App) enrollGuard(next http.Handler) http.Handler {
 				http.Redirect(w, r, prefix+"/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 				return
 			}
-			http.Error(w, "authentification requise", http.StatusUnauthorized)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
 		if r.Method != http.MethodGet {
-			// Anti-CSRF : un header custom force un preflight CORS, que nous ne répondons jamais.
+			// Anti-CSRF: a custom header forces a CORS preflight, which we never answer.
 			if r.Header.Get("X-Requested-With") != "wap" {
-				http.Error(w, "requête refusée", http.StatusForbidden)
+				http.Error(w, "request refused", http.StatusForbidden)
 				return
 			}
 			if bootstrap && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Bootstrap-Token")), []byte(a.bootstrapToken())) != 1 {
-				http.Error(w, "jeton d'amorçage invalide (voir les logs du conteneur)", http.StatusForbidden)
+				http.Error(w, "invalid bootstrap token (see the container logs)", http.StatusForbidden)
 				return
 			}
 		}
@@ -307,16 +314,16 @@ func (a *App) apiState(w http.ResponseWriter, r *http.Request) {
 	name, authed := a.currentUser(r)
 	boot := !authed && a.store.CredentialCount() == 0
 	if boot {
-		a.bootstrapToken() // s'assure que le jeton est affiché dans les logs
+		a.bootstrapToken() // make sure the token is printed in the logs
 	}
 	writeJSON(w, 200, map[string]any{"bootstrap": boot, "user": name})
 }
 
 // ---------------------------------------------------------------- outil statique
 
-// toolHandler sert uniquement web/tool.html (aucune API, aucun état, aucune écriture) :
-// il peut être exposé publiquement, car créer une passkey ne donne aucun accès tant que le
-// fichier JSON produit n'a pas été importé à la main dans DATA_DIR/import.
+// toolHandler serves web/tool.html only (no API, no state, no writes): it can be exposed
+// publicly, since creating a passkey grants no access until the produced JSON file has been
+// imported by hand into DATA_DIR/import.
 func (a *App) toolHandler() http.Handler {
 	page, _ := fs.ReadFile(webFS, "web/tool.html")
 	csp := toolCSP(page)
@@ -338,7 +345,7 @@ func (a *App) toolHandler() http.Handler {
 
 var inlineRe = regexp.MustCompile(`(?s)<(script|style)>(.*?)</(?:script|style)>`)
 
-// toolCSP autorise uniquement le script et le style inline de la page, par empreinte.
+// toolCSP only allows the page's own inline script and style, by hash.
 func toolCSP(page []byte) string {
 	src := map[string]string{"script": "", "style": ""}
 	for _, m := range inlineRe.FindAllSubmatch(page, -1) {
@@ -378,7 +385,7 @@ func (a *App) registerBegin(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in)
 	name := strings.TrimSpace(in.Name)
 	if name == "" || len(name) > 64 {
-		jsonErr(w, 400, "nom invalide (1 à 64 caractères)")
+		jsonErr(w, 400, "invalid name (1 to 64 characters)")
 		return
 	}
 	user := a.store.GetOrNew(name)
@@ -393,12 +400,12 @@ func (a *App) registerBegin(w http.ResponseWriter, r *http.Request) {
 func (a *App) registerFinish(w http.ResponseWriter, r *http.Request) {
 	st, ok := a.enroll.Take(r.URL.Query().Get("cid"))
 	if !ok {
-		jsonErr(w, 400, "cérémonie expirée, recommencez")
+		jsonErr(w, 400, "ceremony expired, please start again")
 		return
 	}
 	cred, err := a.wa.FinishRegistration(st.User, st.Session, r)
 	if err != nil {
-		jsonErr(w, 400, "enrôlement refusé: "+err.Error())
+		jsonErr(w, 400, "enrollment refused: "+err.Error())
 		return
 	}
 	if err := a.store.AddCredential(st.User, cred); err != nil {
@@ -406,7 +413,7 @@ func (a *App) registerFinish(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, 409, err.Error())
 			return
 		}
-		jsonErr(w, 500, "écriture impossible: "+err.Error())
+		jsonErr(w, 500, "cannot write: "+err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]string{"ok": "true"})
@@ -416,11 +423,11 @@ func (a *App) deleteCredential(w http.ResponseWriter, r *http.Request) {
 	uid, err1 := b64.DecodeString(r.URL.Query().Get("user"))
 	cid, err2 := b64.DecodeString(r.URL.Query().Get("id"))
 	if err1 != nil || err2 != nil {
-		jsonErr(w, 400, "paramètres invalides")
+		jsonErr(w, 400, "invalid parameters")
 		return
 	}
 	if a.store.CredentialCount() <= 1 {
-		jsonErr(w, 409, "impossible de supprimer la dernière passkey (verrouillage de l'accès)")
+		jsonErr(w, 409, "cannot delete the last passkey (this would lock you out)")
 		return
 	}
 	if err := a.store.DeleteCredential(uid, cid); err != nil {

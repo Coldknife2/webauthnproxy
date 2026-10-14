@@ -11,7 +11,7 @@ async function api(url, method, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || "erreur " + r.status);
+  if (!r.ok) throw new Error(j.error || "error " + r.status);
   return j;
 }
 

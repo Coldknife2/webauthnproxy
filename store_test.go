@@ -15,12 +15,12 @@ func TestStorePersistence(t *testing.T) {
 	}
 	s2, err := OpenStore(dir)
 	if err != nil || s2.ByName("remi") == nil || len(s2.ByName("remi").Credentials) != 1 {
-		t.Fatalf("relecture échouée: %v", err)
+		t.Fatalf("reload failed: %v", err)
 	}
 	if err := s2.DeleteCredential(u.ID, []byte("c1")); err != nil {
 		t.Fatal(err)
 	}
 	if s2.Count() != 0 {
-		t.Fatal("utilisateur sans passkey conservé")
+		t.Fatal("user without passkey kept")
 	}
 }

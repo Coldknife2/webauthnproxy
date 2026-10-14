@@ -17,7 +17,7 @@ func TestSafeNext(t *testing.T) {
 		{px, "/x?y=1", "/x?y=1"},
 		{px, "//evil.com", "/"},
 		{px, `/\evil.com`, "/"},
-		{px, "https://example.com/", "/"}, // absolu interdit hors mode forward
+		{px, "https://example.com/", "/"}, // absolute URL forbidden outside forward mode
 		{fwd, "https://app.example.com/a?b=1", "https://app.example.com/a?b=1"},
 		{fwd, "https://example.com/", "https://example.com/"},
 		{fwd, "https://evilexample.com/", "/"},
@@ -27,7 +27,7 @@ func TestSafeNext(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := c.a.safeNext(c.in); got != c.want {
-			t.Errorf("safeNext(%q) = %q, attendu %q", c.in, got, c.want)
+			t.Errorf("safeNext(%q) = %q, expected %q", c.in, got, c.want)
 		}
 	}
 }

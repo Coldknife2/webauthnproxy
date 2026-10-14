@@ -11,7 +11,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 )
 
-// User implémente webauthn.User.
+// User implements webauthn.User.
 type User struct {
 	ID          []byte                `json:"id"`
 	Name        string                `json:"name"`
@@ -23,7 +23,7 @@ func (u *User) WebAuthnName() string                       { return u.Name }
 func (u *User) WebAuthnDisplayName() string                { return u.Name }
 func (u *User) WebAuthnCredentials() []webauthn.Credential { return u.Credentials }
 
-// Store est une base JSON dans un seul fichier, écrite de façon atomique.
+// Store is a single-file JSON database, written atomically.
 type Store struct {
 	mu    sync.RWMutex
 	path  string
@@ -48,7 +48,7 @@ func OpenStore(dir string) (*Store, error) {
 	return s, nil
 }
 
-// save doit être appelé avec s.mu verrouillé en écriture.
+// save must be called with s.mu write-locked.
 func (s *Store) save() error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -105,17 +105,17 @@ func (s *Store) ByID(id []byte) *User {
 	return nil
 }
 
-// ErrDuplicate est retournée quand la passkey est déjà enregistrée.
-var ErrDuplicate = errors.New("passkey déjà enregistrée")
+// ErrDuplicate is returned when the passkey is already registered.
+var ErrDuplicate = errors.New("passkey already registered")
 
-// userIDFor dérive l'identifiant (user handle) du nom : le même nom donne toujours le même
-// utilisateur, quel que soit l'outil d'enrôlement (automatique ou import de fichier).
+// userIDFor derives the user handle from the name: the same name always designates the same
+// user, whichever enrollment tool is used (automatic or file import).
 func userIDFor(name string) []byte {
 	h := sha256.Sum256([]byte("webauthnproxy:user:" + name))
 	return h[:]
 }
 
-// GetOrNew retourne l'utilisateur (copie) ; il n'est persisté qu'avec AddCredential.
+// GetOrNew returns the user (a copy); it is only persisted by AddCredential.
 func (s *Store) GetOrNew(name string) *User {
 	if u := s.ByName(name); u != nil {
 		return u
@@ -123,7 +123,7 @@ func (s *Store) GetOrNew(name string) *User {
 	return &User{ID: userIDFor(name), Name: name}
 }
 
-// CredentialCount retourne le nombre total de passkeys.
+// CredentialCount returns the total number of passkeys.
 func (s *Store) CredentialCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -156,7 +156,7 @@ func (s *Store) AddCredential(u *User, c *webauthn.Credential) error {
 	return s.save()
 }
 
-// UpdateCredential met à jour (compteur de signatures, flags) après un login.
+// UpdateCredential stores the updated credential (signature counter, flags) after a login.
 func (s *Store) UpdateCredential(userID []byte, c *webauthn.Credential) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -174,7 +174,7 @@ func (s *Store) UpdateCredential(userID []byte, c *webauthn.Credential) error {
 	return nil
 }
 
-// DeleteCredential supprime une passkey ; l'utilisateur disparaît s'il n'en a plus.
+// DeleteCredential removes a passkey; the user disappears when none is left.
 func (s *Store) DeleteCredential(userID, credID []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

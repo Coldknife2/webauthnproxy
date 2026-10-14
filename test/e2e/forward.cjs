@@ -1,5 +1,5 @@
-// Test du mode forwardAuth contre un vrai Traefik (conteneur). Nécessite podman ou docker.
-//   RUNTIME=podman|docker (défaut: podman si présent, sinon docker), BIN, CHROMIUM comme e2e.cjs
+// forwardAuth mode test against a real Traefik (container). Needs podman or docker.
+//   RUNTIME=podman|docker (default: podman if present, else docker), BIN, CHROMIUM as in e2e.cjs
 const { chromium } = require("playwright");
 const { spawn, execFileSync } = require("child_process");
 const http = require("http");
@@ -38,32 +38,32 @@ const until = async (f, ms = 15000) => { const t = Date.now(); while (Date.now()
     "--host-resolver-rules=MAP *.test.local 127.0.0.1",
     "--unsafely-treat-insecure-origin-as-secure=http://auth.test.local:8000,http://enroll.test.local:8081"] });
   try {
-    const token = (await until(() => /Jeton d'amorçage de l'enrôlement : (\S+)/.exec(log.join(""))))[1];
+    const token = (await until(() => /Enrollment bootstrap token: (\S+)/.exec(log.join(""))))[1];
     const ctx = await browser.newContext(); const page = await ctx.newPage();
     const cdp = await ctx.newCDPSession(page); await cdp.send("WebAuthn.enable");
     await cdp.send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
 
     await until(() => new Promise((res) => http.get({ host: "127.0.0.1", port: 8000, headers: { Host: "app.test.local:8000", Accept: "application/json" } },
       (r) => { r.resume(); res(r.statusCode === 401); }).on("error", () => res(false))));
-    step("Traefik démarré, accès anonyme refusé (401)");
+    step("Traefik started, anonymous access refused (401)");
     await page.goto("http://app.test.local:8000/page?x=1");
-    assert.match(page.url(), /^http:\/\/auth\.test\.local:8000\/_wap\/login\?next=/); step("navigateur redirigé vers l'hôte de login");
+    assert.match(page.url(), /^http:\/\/auth\.test\.local:8000\/_wap\/login\?next=/); step("browser redirected to the login host");
 
     await page.goto("http://enroll.test.local:8081/");
     await page.fill("#token", token); await page.fill("#name", "remi"); await page.click("#f button");
-    await page.waitForSelector("#msg.ok"); step("enrôlement (amorçage)");
+    await page.waitForSelector("#msg.ok"); step("enrollment (bootstrap)");
 
     await page.goto("http://app.test.local:8000/page?x=1"); await page.click("#go");
     await page.waitForURL("http://app.test.local:8000/page?x=1");
-    assert.match(await page.textContent("body"), /SECRET user=remi/); step("connexion puis retour sur la page demandée, utilisateur transmis");
+    assert.match(await page.textContent("body"), /SECRET user=remi/); step("sign-in, return to the requested page, user forwarded");
 
     await page.goto("http://auth.test.local:8000/_wap/login?next=" + encodeURIComponent("https://evil.com/")); await page.click("#go");
     await page.waitForTimeout(1500);
-    assert.ok(!page.url().includes("evil.com")); step("redirection ouverte (next=evil.com) neutralisée");
-    console.log("\nTous les scénarios forwardAuth passent.");
+    assert.ok(!page.url().includes("evil.com")); step("open redirect (next=evil.com) neutralized");
+    console.log("\nAll forwardAuth scenarios pass.");
   } finally {
     await browser.close(); proxy.kill(); upstream.close();
     try { execFileSync(RUNTIME, ["kill", "wap-e2e-traefik"]); } catch {}
     fs.rmSync(data, { recursive: true, force: true });
   }
-})().catch((e) => { console.error("ÉCHEC:", e); process.exit(1); });
+})().catch((e) => { console.error("FAILED:", e); process.exit(1); });

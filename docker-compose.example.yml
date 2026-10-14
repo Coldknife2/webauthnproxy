@@ -1,4 +1,4 @@
-# Exemple : Traefik -> webauthnproxy -> site web
+# Example: Traefik -> webauthnproxy -> website (proxy mode)
 services:
   traefik:
     image: traefik:v3
@@ -14,18 +14,18 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./letsencrypt:/letsencrypt
 
-  monsite:            # le site à protéger : AUCUN label traefik, non exposé
+  mysite:            # the site to protect: NO traefik label, not exposed
     image: nginx:alpine
 
   webauthnproxy:
     build: .
     environment:
-      UPSTREAM: http://monsite:80
+      UPSTREAM: http://mysite:80
       RP_ID: example.com                    # domaine (ou parent) du site
       RP_ORIGINS: https://app.example.com   # URL publique du site, sans slash final
-      # Enrôlement : à décommenter uniquement quand on veut ajouter une passkey (voir le README)
-      # ENROLL_ENABLED: "true"     # enrôlement automatique (port 8081)
-      # TOOL_ENABLED: "true"       # outil statique (port 8082) + import manuel du JSON
+      # Enrollment: uncomment only when you want to add a passkey (see the README)
+      # ENROLL_ENABLED: "true"     # automatic enrollment (port 8081)
+      # TOOL_ENABLED: "true"       # static tool (port 8082) + manual JSON import
       # RP_ORIGINS: https://app.example.com,https://enroll.example.com
     volumes:
       - ./data:/data
@@ -36,7 +36,7 @@ services:
       - traefik.http.routers.app.tls.certresolver=le
       - traefik.http.routers.app.service=app
       - traefik.http.services.app.loadbalancer.server.port=8080
-      # Routeur d'enrôlement automatique (protégé par passkey ; à restreindre au réseau privé par défense en profondeur)
+      # Automatic enrollment router (passkey-protected; restrict to the private network as defense in depth)
       # - traefik.http.routers.enroll.rule=Host(`enroll.example.com`)
       # - traefik.http.routers.enroll.entrypoints=websecure
       # - traefik.http.routers.enroll.tls.certresolver=le
@@ -44,7 +44,7 @@ services:
       # - traefik.http.routers.enroll.service=enroll
       # - traefik.http.services.enroll.loadbalancer.server.port=8081
       # - traefik.http.middlewares.lan.ipallowlist.sourcerange=192.168.0.0/16,10.0.0.0/8
-      # Outil statique (sans état, peut être public) : doit être servi en HTTPS sous le domaine RP_ID
+      # Static tool (stateless, may be public): must be served over HTTPS under the RP_ID domain
       # - traefik.http.routers.tool.rule=Host(`tool.example.com`)
       # - traefik.http.routers.tool.entrypoints=websecure
       # - traefik.http.routers.tool.tls.certresolver=le

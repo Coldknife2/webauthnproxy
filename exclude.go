@@ -2,7 +2,7 @@ package main
 
 import "github.com/go-webauthn/webauthn/protocol"
 
-// excludeList empêche d'enrôler deux fois le même authenticator pour un utilisateur.
+// excludeList prevents enrolling the same authenticator twice for a user.
 func excludeList(u *User) []protocol.CredentialDescriptor {
 	out := make([]protocol.CredentialDescriptor, 0, len(u.Credentials))
 	for i := range u.Credentials {

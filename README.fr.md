@@ -2,6 +2,8 @@
 
 🇬🇧 [English](README.md) · 🇫🇷 Français
 
+> **Langues :** les logs et les messages d'erreur sont en anglais ; les pages web sont en anglais par défaut, ajoutez `?lang=fr` à l'URL pour le français (mémorisé par le navigateur).
+
 [![CI](https://github.com/coldknife2/webauthnproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/coldknife2/webauthnproxy/actions/workflows/ci.yml)
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
@@ -67,7 +69,7 @@ podman run -d --name webauthnproxy \
   -e ENROLL_ENABLED=true \
   webauthnproxy
 
-podman logs webauthnproxy        # affiche le « Jeton d'amorçage de l'enrôlement »
+podman logs webauthnproxy        # affiche le jeton d'amorçage (« Enrollment bootstrap token: … »)
 ```
 
 1. Ouvrez <http://localhost:8081>, saisissez le **jeton d'amorçage** et un nom : créez la première passkey.
@@ -141,7 +143,7 @@ La page `http(s)://<hôte>:8081/` permet d'ajouter et de supprimer des passkeys.
 
 Pour enrôler **sans exposer d'API d'écriture** : une page HTML autonome ([`web/tool.html`](web/tool.html)) qui ne contacte aucun serveur.
 
-1. Ouvrez l'outil (`http(s)://<hôte>:8082/`, domaine pré-rempli avec `RP_ID`), saisissez un nom, cliquez **Créer la passkey**.
+1. Ouvrez l'outil (`http(s)://<hôte>:8082/`, domaine pré-rempli avec `RP_ID`), saisissez un nom, cliquez **Créer la passkey** (ajoutez `?lang=fr` à l'URL pour l'interface en français).
 2. L'outil affiche un **fichier JSON** (clé publique et métadonnées, aucun secret) : téléchargez-le.
 3. Copiez-le **à la main** dans le dossier d'import du proxy : `cp remi-example.com.json data/import/`
    (avec un conteneur : `podman cp remi-example.com.json webauthnproxy:/data/import/`).
@@ -278,12 +280,12 @@ Sources : [Pocket ID](https://github.com/pocket-id/pocket-id) ·
 | Symptôme | Cause probable |
 |---|---|
 | `SecurityError` à la création de la passkey | La page n'est pas en HTTPS (hors `localhost`), ou `RP_ID` n'est pas le domaine de la page / un de ses parents. |
-| « passkey refusée » à la connexion | L'URL de la page de login n'est pas dans `RP_ORIGINS` (schéma, hôte **et port** exacts), ou la passkey a été créée pour un autre `RP_ID`. |
+| « passkey rejected » à la connexion | L'URL de la page de login n'est pas dans `RP_ORIGINS` (schéma, hôte **et port** exacts), ou la passkey a été créée pour un autre `RP_ID`. |
 | Import : `.rejected` | Lisez les logs : mauvais domaine, doublon, vérification utilisateur absente, nom/identifiant incohérents. |
 | Import ignoré | Le fichier doit se terminer par `.json` ; le conteneur (uid 65532) doit pouvoir lire/écrire `data/import/`. |
 | `permission denied` sur `/data` | `chown 65532 data` (podman rootless : `podman unshare chown 65532:65532 data`). |
 | Boucle de redirection en mode forward | `COOKIE_DOMAIN` ne couvre pas le site, ou l'accès à la page de login se fait en HTTP alors que le cookie est `Secure`. |
-| Jeton d'amorçage introuvable | `podman logs webauthnproxy`, ligne « Jeton d'amorçage de l'enrôlement ». |
+| Jeton d'amorçage introuvable | `podman logs webauthnproxy`, ligne « Enrollment bootstrap token ». |
 
 ## Développement
 

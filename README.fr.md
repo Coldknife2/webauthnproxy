@@ -141,7 +141,6 @@ Ce que disent les sources (code et README lus le 14/10/2026) :
 
 | | webauthnproxy | Pocket ID + Tinyauth | Authelia |
 |---|---|---|---|
-| Connexion passkey seule | ✅ | ✅ (Pocket ID) | ⚠️ mot de passe parfois exigé |
 | Conteneurs à faire tourner | 1 | 2 (+ Traefik) | 1 (+ stockage) |
 | Un login pour des **domaines sans rapport** | ✅ échange de ticket | ❌ un seul domaine de cookie | un portail et une connexion par domaine |
 | Proxy intégré (ni Traefik, Caddy, Nginx) | ✅ | ❌ | ❌ |

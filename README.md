@@ -139,7 +139,6 @@ What the sources say (code and READMEs read on 2026-10-14):
 
 | | webauthnproxy | Pocket ID + Tinyauth | Authelia |
 |---|---|---|---|
-| Passkey-only login | ✅ | ✅ (Pocket ID) | ⚠️ password may still be required |
 | Containers to run | 1 | 2 (+ Traefik) | 1 (+ storage) |
 | One login for **unrelated domains** | ✅ ticket exchange | ❌ one cookie domain | one portal and sign-in per domain |
 | Built-in proxy (no Traefik/Caddy/Nginx needed) | ✅ | ❌ | ❌ |

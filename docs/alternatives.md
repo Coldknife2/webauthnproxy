@@ -28,9 +28,9 @@ Small services that put a passkey login in front of other sites.
 | **One login for unrelated domains** | ✅ ticket exchange + `ALLOWED_HOSTS` | ❌ one `cookieDomain` | ❌ one `cookie_domain` (+ a redirect allowlist) |
 | Username-less login (discoverable credentials) | ✅ | ❌ the user name is entered | ✅ |
 | Enrolling | automatic page protected by existing passkeys (bootstrap token for the first), **or** static HTML tool + JSON file imported without a restart | `/webauthn/register` shows a credential to paste into `credentials.yml`, then restart | temporary bootstrap admin on loopback |
-| Sessions | signed stateless cookie; sign-out revokes **per user** | signed/encrypted cookie (gorilla), secrets list allows key rotation | **server-side**: per-session revocation, idle timeout, User-Agent/IP checks |
-| Rate limiting | ❌ | none found in the code | ✅ on bootstrap enrollment only |
-| Trust in `X-Forwarded-*` headers | trusted from any caller; relies on network placement ([reverse-proxy.md](reverse-proxy.md)) | not examined | trusted only from configured proxy CIDRs that also present a shared-secret header |
+| Sessions | signed stateless cookie; sign-out revokes **per user**; stateless idle timeout; key rotation (`SESSION_SECRET_PREVIOUS`) | signed/encrypted cookie (gorilla), secrets list allows key rotation | **server-side**: per-session revocation, idle timeout, User-Agent/IP checks |
+| Rate limiting | ✅ login and enrolment endpoints, per client address and global (in memory, per process) | none found in the code | ✅ on bootstrap enrollment only |
+| Trust in `X-Forwarded-*` headers | trusted only from `TRUSTED_PROXIES` (CIDRs, required in forward mode, never by default); no shared secret ([reverse-proxy.md](reverse-proxy.md)) | not examined | trusted only from configured proxy CIDRs that **also present a shared-secret header** |
 | Distribution | multi-arch container image built and pushed to GHCR by the CI workflow (first publication pending at the time of writing) | Docker Hub image (per its README) | `.deb`/`.rpm` + systemd unit (no container image found) |
 | Automated tests | unit + e2e (Chromium with a virtual authenticator, real Traefik) | none in the repository | unit tests |
 | Age | first commit 2026-10-14 | first commit 2022-01-03 | first commit 2026-04-17 |
@@ -38,13 +38,62 @@ Small services that put a passkey login in front of other sites.
 **What this repo adds** to Quiq/webauthn_proxy: a built-in reverse proxy, Traefik forwardAuth tested end to end, login across unrelated domains with an allowlist of sites, username-less login,
 an enrollment page protected by passkeys and an import path that needs no restart, a container image published by CI, and automated tests including a real-browser suite.
 
-**What it lacks** compared with them: per-session revocation, idle timeout and client binding (passkey-forwardauth), rate limiting, trusting forwarded headers only from configured proxies (passkey-forwardauth),
-key rotation without signing everybody out (Quiq), `.deb`/`.rpm` packaging, and, most of all, **time in use**: Quiq's project has been maintained since 2022, this one is new and unaudited.
+**What it lacks** compared with them: server-side sessions with per-session revocation and client binding (User-Agent/IP) as in passkey-forwardauth, its shared-secret check on the proxy,
+`.deb`/`.rpm` packaging, and, most of all, **time in use**: Quiq's project has been maintained since 2022, this one is new and unaudited.
+
+### Why this project rather than passkey-forwardauth?
+
+[passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) is the closest project and, on sessions, the more careful one. Read it first.
+
+**Real differences in favor of this repo (two):**
+
+1. **A built-in proxy mode.** `MODE=proxy` relays traffic to one upstream, so a site without Traefik, Caddy or nginx in front can be protected with one container. passkey-forwardauth only does forward-auth.
+2. **One login for unrelated domains** through a host list (`ALLOWED_HOSTS`): `auth.com` can protect `anysite.com` and `other.org`. passkey-forwardauth shares one `cookie_domain`.
+
+**What passkey-forwardauth does better:**
+
+- **Server-side sessions with per-session revocation**: one stolen session can be killed alone; here, sign-out revokes every session of the user at once, and a stolen cookie works until it expires (or the user signs out).
+- Client binding (User-Agent/IP hash), a shared-secret header on top of the trusted-proxy CIDRs, a `.deb`/`.rpm` and a systemd unit, a bootstrap that only listens on loopback.
+
+**Which one should you pick?**
+
+- **One domain with subdomains, forward-auth with Traefik**: passkey-forwardauth or [Tinyauth](https://tinyauth.app) are enough, and passkey-forwardauth has the stronger session model. The cross-domain feature does not apply to you.
+- **A site with no reverse proxy in front, or several unrelated domains** behind one Traefik: this is where this repo has a reason to exist. These are narrow cases.
+- Everything else, **there is no solid reason to prefer this project today**: the gap that matters (sessions) is on the other side, and passkey-forwardauth is older by six months (since 2026-04-17, against 2026-10-14 here), which is little, but is more.
+
+The lines above are about features read in the code and documentation on 2026-10-14; passkey-forwardauth was not run for this comparison.
 
 ## Identity platforms: a different job
 
-[Pocket ID](https://github.com/pocket-id/pocket-id) + [Tinyauth](https://github.com/tinyauthapp/tinyauth), and [Authelia](https://www.authelia.com/): users, groups, OIDC for your apps, access rules, admin interfaces.
-The comparison, with the quotes from their official documentation, is in the [README](../README.md#why). They are the better choice when you need that.
+**Pocket ID, Tinyauth and Authelia are good projects, and they do a different job.** They are identity and SSO platforms:
+users and groups, OIDC for your apps, access rules per site, admin interfaces, mature and widely used.
+webauthnproxy is a gate. It answers one question, *"does this visitor hold a registered passkey?"*, for one or many sites.
+If you need the former, use them. If you only need the latter, you should not have to run two or three services and a database for it.
+
+What the official documentation says (read on 2026-10-14):
+
+- **Traefik** has [no passkey plugin](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396).
+- **[Pocket ID](https://github.com/pocket-id/pocket-id)** supports passkeys only, and "only provides OpenID Connect, so it can't protect an app that has no OIDC support by itself":
+  you put an authentication proxy in front, such as Tinyauth, caddy-security or OAuth2 Proxy ([guide](https://pocket-id.org/docs/guides/proxy-services)).
+- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)** is that proxy: forward-auth with [username/password (+ TOTP), LDAP and OpenID Connect](https://tinyauth.app/docs/reference/authentication/);
+  it has no passkey support of its own and documents [Pocket ID as the way to get passkeys](https://tinyauth.app/docs/guides/pocket-id/).
+  It sets its cookie "for the parent domain of the application URL" so that its apps are subdomains of it ([domain configuration](https://tinyauth.app/docs/getting-started/));
+  its code refuses apps outside that domain (`domain does not match cookie domain`), which I reproduced with Tinyauth v5.2.0 behind Traefik on 2026-10-14
+  ([experiment below](#experiment-one-login-for-two-unrelated-domains-with-tinyauth); Pocket ID was not part of that test).
+- **[Authelia](https://www.authelia.com/overview/authentication/security-key/)** has passwordless passkey login since v4.39, but "the Passkey itself is a single factor": it may still ask for a password to enforce a `two_factor` policy
+  (an experimental option lets a user-verified passkey satisfy it). Each [session cookie domain](https://www.authelia.com/configuration/session/introduction/) is paired with an `authelia_url` inside that domain,
+  so unrelated domains mean separate portals and separate sign-ins.
+
+| | webauthnproxy | Pocket ID + Tinyauth | Authelia |
+|---|---|---|---|
+| Containers to run | 1 | 2 (+ Traefik) | 1 (+ storage) |
+| One login for **unrelated domains** | ✅ ticket exchange | ❌ one cookie domain (tested: Tinyauth v5.2.0) | one portal and sign-in per domain (from its documentation, not tested) |
+| Built-in proxy (no Traefik/Caddy/Nginx needed) | ✅ | ❌ | ❌ |
+| OIDC SSO for other apps | ❌ | ✅ | ✅ |
+| Per-site rules, groups, several admins | ❌ | ✅ basic (Tinyauth per-app rules, Pocket ID groups) | ✅ |
+| Maturity | new, unaudited | high | high |
+
+**Choose them** for OIDC, groups, per-site rules, several administrators, or software that is widely used and audited.
 
 ### Experiment: one login for two unrelated domains with Tinyauth
 

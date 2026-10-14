@@ -8,6 +8,8 @@
 **Connexion par passkey devant n'importe quel site. Un conteneur, un fichier JSON.**
 Pas de mot de passe. Pas d'annuaire. Pas de fournisseur OIDC.
 
+**Public visé :** une personne, un homelab, plusieurs sites web accessibles par navigateur.
+
 > La documentation détaillée (`docs/`) est en anglais.
 
 ## Démarrage rapide
@@ -66,7 +68,7 @@ HTTPS obligatoire hors `localhost`. Traefik devant : [`docker-compose.example.ym
 
 | `MODE=proxy` (défaut) | `MODE=forward` |
 |---|---|
-| Relaie le trafic vers `UPSTREAM`. Un site. | `forwardAuth` Traefik. **Plusieurs sites, n'importe quels domaines.** |
+| Relaie le trafic vers `UPSTREAM`. Un site. | `forwardAuth` Traefik. **Plusieurs sites.** |
 | Ajoute `X-Authenticated-User`, retire le cookie de session. | `auth.com` protège `anysite.com`, `other.org`… |
 
 ```sh
@@ -84,6 +86,8 @@ TRUSTED_PROXIES=172.18.0.0/16   # plage d'adresses de Traefik : obligatoire, per
 - traefik.http.middlewares.passkey.forwardauth.authResponseHeaders=X-Authenticated-User
 - traefik.http.routers.monsite.middlewares=passkey
 ```
+
+**Plusieurs domaines sans rapport ?** C'est le cas pour lequel ce mode existe (`auth.com` protège `anysite.com` et `other.org`). Avec **un seul domaine et ses sous-domaines**, il n'est pas nécessaire : [Tinyauth](https://tinyauth.app) ou [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) suffisent, et passkey-forwardauth a le meilleur modèle de session ([comparaison et ma conclusion](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth), en anglais).
 
 Fonctionnement du login multi-domaines : [docs/forwardauth.md](docs/forwardauth.md). Exemple : [`docker-compose.forwardauth.example.yml`](docker-compose.forwardauth.example.yml).
 

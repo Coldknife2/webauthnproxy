@@ -8,6 +8,8 @@
 **Passkey login in front of any site. One container, one JSON file.**
 No passwords. No directory. No OIDC provider.
 
+**For:** one person, a homelab, several websites reached with a browser.
+
 ## Quick start
 
 Protect a demo site ([`whoami`](https://github.com/traefik/whoami), it prints the headers it receives).
@@ -64,7 +66,7 @@ HTTPS is required outside `localhost`. Put Traefik in front: [`docker-compose.ex
 
 | `MODE=proxy` (default) | `MODE=forward` |
 |---|---|
-| Relays traffic to `UPSTREAM`. One site. | Traefik `forwardAuth`. **Many sites, any domains.** |
+| Relays traffic to `UPSTREAM`. One site. | Traefik `forwardAuth`. **Many sites.** |
 | Adds `X-Authenticated-User`, strips the session cookie. | `auth.com` protects `anysite.com`, `other.org`… |
 
 ```sh
@@ -82,6 +84,8 @@ TRUSTED_PROXIES=172.18.0.0/16   # Traefik's address range: required, nobody else
 - traefik.http.middlewares.passkey.forwardauth.authResponseHeaders=X-Authenticated-User
 - traefik.http.routers.mysite.middlewares=passkey
 ```
+
+**Several unrelated domains?** That is the case this mode is built for (`auth.com` protecting `anysite.com` and `other.org`). With **one domain and its subdomains** you do not need it: [Tinyauth](https://tinyauth.app) or [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) are enough, and passkey-forwardauth has the stronger session model ([comparison and my conclusion](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth)).
 
 How the cross-domain login works: [docs/forwardauth.md](docs/forwardauth.md). Example: [`docker-compose.forwardauth.example.yml`](docker-compose.forwardauth.example.yml).
 

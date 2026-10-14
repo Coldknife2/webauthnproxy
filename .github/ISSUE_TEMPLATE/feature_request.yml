@@ -1,0 +1,14 @@
+name: Feature request
+description: An idea for an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: Need
+      description: What problem do you want to solve? (the project aims for simplicity: one container, one file)
+    validations: {required: true}
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idea

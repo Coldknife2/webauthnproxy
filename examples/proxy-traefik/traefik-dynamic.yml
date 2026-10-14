@@ -1,0 +1,11 @@
+http:
+  routers:
+    app:
+      rule: Host(`app.localhost`)
+      entryPoints: [web]
+      service: wap
+  services:
+    wap:
+      loadBalancer:
+        servers:
+          - url: http://webauthnproxy:8080

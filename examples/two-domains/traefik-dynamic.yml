@@ -1,0 +1,32 @@
+http:
+  routers:
+    # Login host. /_wap/verify is for Traefik only: keep it off this public router.
+    auth:
+      rule: Host(`auth.localhost`) && !PathPrefix(`/_wap/verify`)
+      entryPoints: [web]
+      service: wap
+    one:
+      rule: Host(`one.localhost`)
+      entryPoints: [web]
+      middlewares: [passkey]
+      service: site-one
+    two:
+      rule: Host(`two.localhost`)
+      entryPoints: [web]
+      middlewares: [passkey]
+      service: site-two
+  middlewares:
+    passkey:
+      forwardAuth:
+        address: http://webauthnproxy:8080/_wap/verify
+        authResponseHeaders: [X-Authenticated-User]
+  services:
+    wap:
+      loadBalancer:
+        servers: [{url: "http://webauthnproxy:8080"}]
+    site-one:
+      loadBalancer:
+        servers: [{url: "http://site-one:80"}]
+    site-two:
+      loadBalancer:
+        servers: [{url: "http://site-two:80"}]

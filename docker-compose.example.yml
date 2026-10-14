@@ -1,0 +1,53 @@
+# Example: Traefik -> webauthnproxy -> website (proxy mode)
+services:
+  traefik:
+    image: traefik:v3
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --certificatesresolvers.le.acme.email=vous@example.com
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+    ports: ["443:443"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
+
+  mysite:            # the site to protect: NO traefik label, not exposed
+    image: nginx:alpine
+
+  webauthnproxy:
+    image: ghcr.io/coldknife2/webauthnproxy:latest   # pin a version in production, e.g. :1.2.3
+    # build: .                                        # or build from source
+    environment:
+      UPSTREAM: http://mysite:80
+      RP_ID: example.com                    # domaine (ou parent) du site
+      RP_ORIGINS: https://app.example.com   # URL publique du site, sans slash final
+      # Enrollment: uncomment only when you want to add a passkey (see the README)
+      # ENROLL_ENABLED: "true"     # automatic enrollment (port 8081)
+      # TOOL_ENABLED: "true"       # static tool (port 8082) + manual JSON import
+      # RP_ORIGINS: https://app.example.com,https://enroll.example.com
+    volumes:
+      - ./data:/data
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.app.rule=Host(`app.example.com`)
+      - traefik.http.routers.app.entrypoints=websecure
+      - traefik.http.routers.app.tls.certresolver=le
+      - traefik.http.routers.app.service=app
+      - traefik.http.services.app.loadbalancer.server.port=8080
+      # Automatic enrollment router (passkey-protected; restrict to the private network as defense in depth)
+      # - traefik.http.routers.enroll.rule=Host(`enroll.example.com`)
+      # - traefik.http.routers.enroll.entrypoints=websecure
+      # - traefik.http.routers.enroll.tls.certresolver=le
+      # - traefik.http.routers.enroll.middlewares=lan
+      # - traefik.http.routers.enroll.service=enroll
+      # - traefik.http.services.enroll.loadbalancer.server.port=8081
+      # - traefik.http.middlewares.lan.ipallowlist.sourcerange=192.168.0.0/16,10.0.0.0/8
+      # Static tool (stateless, but never publish it either): needs HTTPS under the RP_ID domain, so serve it on a private route (VPN / IP allowlist)
+      # - traefik.http.routers.tool.rule=Host(`tool.example.com`)
+      # - traefik.http.routers.tool.entrypoints=websecure
+      # - traefik.http.routers.tool.tls.certresolver=le
+      # - traefik.http.routers.tool.service=tool
+      # - traefik.http.services.tool.loadbalancer.server.port=8082

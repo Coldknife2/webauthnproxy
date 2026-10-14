@@ -1,0 +1,40 @@
+# One login for two unrelated sites behind Traefik, webauthnproxy in forward mode.
+#   Browser -> Traefik --(forwardAuth)--> webauthnproxy ; Traefik -> site
+# Local, plain HTTP: auth.localhost is the login host, one.localhost and two.localhost are the protected sites.
+# In production they would be, say, auth.com, anysite.com and other.org (see ../../docker-compose.forwardauth.example.yml).
+# Tested by `make examples`.
+services:
+  traefik:
+    image: docker.io/library/traefik:v3
+    command:
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --entrypoints.web.address=:8000
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: ["./traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro"]
+
+  site-one:
+    image: docker.io/traefik/whoami
+    command: ["--name", "site-one"]
+  site-two:
+    image: docker.io/traefik/whoami
+    command: ["--name", "site-two"]
+
+  webauthnproxy:
+    image: ${WAP_IMAGE:-ghcr.io/coldknife2/webauthnproxy:latest}
+    environment:
+      MODE: forward
+      LOGIN_URL: http://auth.localhost:8000/_wap/login
+      ALLOWED_HOSTS: one.localhost:8000,two.localhost:8000   # the sites this login may protect: nothing else is served
+      RP_ID: auth.localhost                                  # passkeys belong to the login host, not to the sites
+      RP_ORIGINS: http://auth.localhost:8000,http://auth.localhost:8081
+      ENROLL_ENABLED: "true"           # remove once your passkeys are enrolled
+      TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    ports: ["127.0.0.1:8081:8081"]
+    volumes: ["wap-data:/data"]
+    healthcheck:
+      test: ["CMD", "/webauthnproxy", "healthcheck"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  wap-data:

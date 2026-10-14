@@ -4,7 +4,7 @@
 
 **What is guaranteed**
 
-- No request reaches the site without a valid session cookie (HMAC-SHA256 signed, expiring, revoked by sign-out, invalidated if the user is deleted). See [Session tokens](#session-tokens-hmac-signed-cookies).
+- No request reaches the site without a valid session: a random cookie value that the server knows (expiring, idle-limited, revocable one by one, ended if the user is deleted). See [Sessions](#sessions-server-side).
 - Login: single-use challenge (5 min), origin and domain verified, signature counter updated, user verification required, [rate limited](#rate-limiting) and [audited](#audit-log).
 - `X-Forwarded-*` headers are believed **only from declared proxies** ([`TRUSTED_PROXIES`](#trusted-proxies-and-forwarded-headers)); nobody is trusted by default.
 - Cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` whenever the connection is HTTPS (or a trusted proxy says so); pages are served with a restrictive CSP.
@@ -13,77 +13,61 @@
 - Automatic enrollment: session required, bootstrap token compared in constant time, CSRF protection, the last passkey cannot be deleted.
 - Import: the file is untrusted and fully revalidated (see [enrollment](enrollment.md)), with a size limit.
 - Static tool: no writes, hash-based CSP (`script-src 'sha256-…'`, no `unsafe-inline`).
-- The database holds **public keys only**; only the session key is secret (leaking it allows forging sessions).
+- The database holds **public keys only**. There is no signing key to leak: `sessions.json` holds hashes of the cookie values, which cannot be turned back into cookies.
 
 **Assumptions and limits**
 
 - TLS is terminated upstream (Traefik); without HTTPS WebAuthn does not work outside `localhost`.
-- No per-site rules and no high availability: a single instance, with ceremonies, ticket nonces and rate-limit counters kept in memory (a restart resets them).
+- No per-site rules and no high availability: a single instance, with ceremonies, tickets and rate-limit counters kept in memory (a restart resets them; sessions are saved to disk and survive).
 - Not audited by a third party; one maintainer.
 - User handles are derived from the name (SHA-256) so the same name always designates the same user whichever enrollment tool is used.
 - One root domain per instance (`RP_ID`).
 
 To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 
-Sections: [session tokens](#session-tokens-hmac-signed-cookies) · [key rotation](#key-rotation) · [idle timeout](#idle-timeout) · [rate limiting](#rate-limiting) · [trusted proxies](#trusted-proxies-and-forwarded-headers) · [audit log](#audit-log) · [cross-domain threat model](#cross-domain-login-threat-model) · [reverse proxy and exposure](reverse-proxy.md)
+Sections: [sessions](#sessions-server-side) · [idle timeout](#idle-timeout) · [rate limiting](#rate-limiting) · [trusted proxies](#trusted-proxies-and-forwarded-headers) · [audit log](#audit-log) · [cross-domain threat model](#cross-domain-login-threat-model) · [reverse proxy and exposure](reverse-proxy.md)
 
-## Session tokens (HMAC-signed cookies)
+## Sessions (server side)
 
-**Is a signed cookie solid?** Yes, as long as the secret is strong and you accept its limits. A session cookie here is
-`user.audience.expiry.generation.signature`, where the signature is HMAC-SHA256 over the other fields.
+A session cookie is **256 random bits**. The server keeps the SHA-256 of that value together with the session's data (user, site, creation, expiry, last activity, optional binding) in memory and in
+`DATA_DIR/sessions.json` (mode `0600`, rewritten atomically). The design follows [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth)'s server-side sessions, plus persistence, a login/site tree and an admin command.
 
-**What makes it solid**
+**What it gives**
 
-- Forging a token requires `SESSION_SECRET` (256-bit when generated, **32 characters minimum when you set it**). The signature is compared in constant time.
-- No `alg` field, so none of the JWT pitfalls (`alg: none`, algorithm confusion). A fixed algorithm, a fixed layout.
-- Every field is covered by the signature, and fields are base64url-encoded so a value can never inject a separator.
-- Session cookies and login tickets use separate signing domains: one can never be accepted as the other.
-- The audience binds a site's cookie to its host; tickets expire after 60 s and are single-use **within one process, in memory only** (see [Single use of tickets](#single-use-of-tickets)).
-- **Revocation.** Each user has a session generation, stored in `users.json`. Signing out (see [forwardAuth](forwardauth.md)) increments it, so every token issued earlier,
-  including a copied one, is refused on the next request, on every site. Deleting a user does the same.
-- `HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS.
+- **Revocation one session at a time**, and exact: `sessions list` / `sessions revoke <id>` ([enrollment.md](enrollment.md#listing-and-revoking-passkeys)), `signout <user>` for all of a user's, a sign-out button for "this browser" or "all devices".
+- **An exact idle timeout** (`SESSION_IDLE_TIMEOUT`): last activity is recorded server side, so the cookie never has to be re-issued, and **Traefik needs no `addAuthCookiesToResponse`**.
+- **Nothing to forge.** There is no signing key, hence nothing to rotate or leak (`SESSION_SECRET` is ignored). A copy of `sessions.json` or of the backup does not give a cookie: only hashes are stored.
+- **Sessions survive a restart.** `sessions.json` is written when a session is created or revoked and every 30 s for last-activity times; a crash can only lose a little precision on those.
+- **Optional binding** (`SESSION_BIND=ua`, `ip` or `ua,ip`): the session only works with the same User-Agent and/or client address as at sign-in. Off by default: User-Agent strings change with browser updates and addresses change on mobile networks;
+  a cookie thief can also copy the User-Agent, so `ua` raises the bar only slightly.
+- Cookie flags: `HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS. A site's cookie is host-only and **bound to its host** (audience stored with the session).
+
+**How "this browser" works.** A site session opened through the ticket exchange remembers the login session it came from. Signing out of the login host or of any site ends that login session and every site session opened from it;
+signing in again in the same browser replaces the old login session and keeps its sites. Other devices stay signed in. "Sign out of all devices" (`?all=1`, the second button on the login host's page) and `signout <user>` end all of a user's sessions.
+Deleting a user's last passkey ends their sessions.
 
 **Its limits**
 
-- It is a *bearer token*: whoever holds the cookie is the user until it expires (`SESSION_TTL`, 12 h by default) or the user signs out. Use a shorter TTL for sensitive sites.
-- The secret is the crown jewel: `SESSION_SECRET` or `DATA_DIR/session.key` allows minting a session for any user and any site. Protect it like a password
-  (the generated file is mode `0600`; do not bake it into images). Rotate by changing it; everybody is signed out.
-- Revocation is per user ("sign out everywhere"), not per session; there is no list of active sessions.
-- The signing key can be [rotated without signing anybody out](#key-rotation), and an [idle timeout](#idle-timeout) can be added, still without server-side state.
-- Tokens are signed, not encrypted: the holder can read the user name inside.
-- There is no device binding (IP or User-Agent); it breaks too often on mobile networks.
-- Ticket single use is kept in memory, per process. A ticket never survives a restart and is never accepted by another instance, so it cannot be spent twice; the price is that a login in flight during a restart fails and starts again. One instance only.
+- It is still a *bearer token*: whoever holds the cookie is the user until it expires (`SESSION_TTL`, 12 h by default), goes idle, or is revoked. Use a shorter TTL for sensitive sites.
+- Anyone who can **write** `sessions.json` (the data volume) can open a session for any user by adding the hash of a value they chose. That is the same trust as writing `users.json` and is outside this model.
+- Restoring an old `sessions.json` brings back sessions that were revoked after the backup. After a restore or an account recovery, delete `sessions.json` (everybody signs in again).
+- A single process owns the table: running two instances against the same data is unsupported.
+- The table is bounded (20,000 sessions; beyond that the ones closest to expiry go).
+- Each lookup costs one SHA-256, a read lock and a map access, and updates an atomic timestamp (measured in [performance](performance.md)).
 
-**Compared with server-side session IDs** (Authelia, Tinyauth): equivalent security with a strong secret. A server-side store can list and revoke single sessions and holds no key that
-can forge them, at the cost of a database and a lookup per request. Here, stateless verification is what keeps memory and CPU low
-([performance](performance.md)), and per-user revocation covers the main need (a stolen or lost cookie).
+*Tested:* round trip; random, unique, 43-character values; only hashes in `sessions.json`, mode `0600`; modified, appended, guessed, foreign and old-format cookies refused; expiry and idle timeout (including an active session outliving the idle timeout, and the absolute limit still applying);
+restart (sessions kept, revoked ones not, expired ones dropped, corrupt file stops the start); binding on User-Agent and address; revocation scopes (tree, user, id, other users untouched); sign-out of one browser versus all devices; deleted users; table bound.
 
 ## Local administration socket
 
-`DATA_DIR/admin.sock` (mode `0600`, Unix socket, never a network port) lets the `passkeys list|revoke` and `signout` commands act on the running service ([enrollment.md](enrollment.md#listing-and-revoking-passkeys)).
+`DATA_DIR/admin.sock` (mode `0600`, Unix socket, never a network port) lets the `passkeys list|revoke`, `sessions list|revoke` and `signout` commands act on the running service ([enrollment.md](enrollment.md#listing-and-revoking-passkeys)).
 Anyone who can open it can delete passkeys and sign users out, so it carries the same trust as write access to the data volume. It cannot add a passkey or create a session.
 *Tested:* socket mode `0600`; the admin routes are absent from the public, enrolment and tool ports and change nothing when called there; the last passkey cannot be deleted; a stale socket from a previous run does not prevent start.
 
-## Key rotation
-
-The signing key can be replaced **without signing anybody out**: the new key signs everything new, the previous key (or keys) still verifies.
-
-1. Generate a new secret (`openssl rand -base64 48`). Set `SESSION_SECRET=<new>` and `SESSION_SECRET_PREVIOUS=<old>` (comma-separated for several), then restart.
-   With the generated key file instead: `mv data/session.key data/session.key.previous`, then restart (a new `session.key` is created).
-2. Wait at least `SESSION_TTL` (tokens signed with the old key expire by then; tickets live 60 s), then remove the previous key.
-
-Tokens signed with the previous key are accepted as they are; they are not re-signed. **If the key leaked, rotate without keeping it as previous**: everybody signs in again, and nothing signed with the leaked key is accepted.
-*Tested:* unit tests (old key accepted during the window, refused after; new tokens signed with the new key only; unknown key and tampered tokens refused; previous-key file loading).
-
 ## Idle timeout
 
-`SESSION_IDLE_TIMEOUT` (off by default) signs a user out after that long without activity, in addition to the absolute `SESSION_TTL`. It needs **no server-side state**: the cookie records the last activity
-(inside the signature), the service refuses a cookie that is older than the timeout, and re-issues the cookie with a fresh time once a quarter of the timeout has passed (the absolute expiry never moves).
-In forward mode `/_wap/verify` returns the renewed cookie with its `200`; Traefik only passes it to the browser if the middleware has `addAuthCookiesToResponse: [wap_session]`
-(without it, active users are signed out at the idle limit).
-
-What it does and does not do: it ends **forgotten** sessions (a cookie left on a lost or shared device stops working after the idle time). It does **not** stop an active thief: whoever uses a copied cookie keeps it alive, exactly like the owner.
-*Tested:* unit tests with a fake clock (expiry, renewal threshold, absolute limit, forged last-activity refused) and an end-to-end test through a real Traefik.
+`SESSION_IDLE_TIMEOUT` (off by default) ends a session after that long without activity, in addition to the absolute `SESSION_TTL`. Activity is recorded on the server at each request, so the cookie does not change and
+the forwardAuth middleware needs no extra option. *Tested:* unit tests with a fake clock (exact limit, activity keeps the session, absolute limit still applies, proxy mode, forward mode sets no cookie), and an end-to-end test with a real Traefik.
 
 ## Rate limiting
 
@@ -132,18 +116,19 @@ The one-time bootstrap token is printed in the regular log on purpose, so that t
 
 ## Single use of tickets
 
-Tickets are signed, stateless values, so a signature alone cannot make them single-use. The guarantee is **a set of used nonces held in the memory of the process**:
+A ticket is a random value held **in the memory of the process** that issued it, together with the user, the site and the login session it comes from. It is **removed on first presentation**, whatever the outcome:
 
 | Case | Result | Test |
 |---|---|---|
-| Same ticket presented twice to the same process | second use refused (`403`, audit `ticket_rejected`, reason `replay`) | `TestTicketReplaySameProcess` |
-| Ticket used, then the container restarts, then the ticket is presented again (still within 60 s) | refused: every ticket carries a random identifier of the process that issued it, regenerated at each start | `TestTicketReplayAfterRestartRefused` |
-| Two instances with the same keys and data; ticket issued by one, presented to the other | refused on the other; accepted once on the issuer, then refused | `TestTicketTwoInstances` |
-| Validly signed ticket without the identifier (older format) | refused | `TestTicketForgedBootRefused` |
+| Same ticket presented twice | second use refused (`403`, audit `ticket_rejected`) | `TestTicketReplaySameProcess` |
+| Ticket used, the container restarts, the ticket is presented again (within 60 s) | refused: the table is empty after a restart | `TestTicketReplayAfterRestartRefused` |
+| Unused ticket, restart, then presented | refused (the user signs in again) | same |
+| Two instances; ticket issued by one, presented to the other | refused on the other; accepted once on the issuer, then refused | `TestTicketTwoInstances` |
+| Presented on a site it was not issued for | refused **and burnt** | `TestTicketForTheWrongSiteIsRefusedAndBurnt` |
+| Guessed, empty, or a session cookie used as ticket | refused | `TestForgedTicketRefused` |
+| Login session ended between issue and use | refused | `TestTicketIssuedBeforeLogoutIsRefused` |
 
-What this means, without rounding: **single use is guaranteed only while the issuing process lives.** It is not stored on disk and not shared. Before this identifier existed, a ticket used shortly before a restart could be
-redeemed once more in its remaining seconds; that is fixed, at the cost that a login in flight during a restart (or a key rotation, which needs a restart) fails once and the user signs in again.
-Session cookies are unaffected by restarts. A multi-instance deployment would need shared state for the nonces and is not supported.
+Without rounding: **single use is exact within one process and is not shared or persisted.** A login in flight during a restart fails once and starts again; sessions are unaffected. A multi-instance deployment would need shared state and is not supported.
 
 ## Cross-domain login: threat model
 
@@ -157,15 +142,15 @@ Applies to `MODE=forward` when the protected sites are on domains unrelated to t
 
 | Property | How it is enforced | Covered by |
 |---|---|---|
-| Ticket lifetime: **60 seconds** | expiry inside the signed ticket | unit test |
+| Ticket lifetime: **60 seconds** | expiry stored with the ticket | unit test |
 | **Single use** | the ticket nonce is remembered **in memory of the issuing process** until it expires; the ticket carries the identifier of that process, so tickets from another run or instance are refused | unit tests: replay, after a restart, on a second instance, without identifier; e2e: replayed ticket refused |
 | **Bound to the target host** | the ticket carries the host it was issued for; `/_wap/callback` compares it with `X-Forwarded-Host` | unit test; e2e: a fresh ticket is refused on another site and accepted on its own |
-| **Bound to the user's session generation** | signing out increments it, so tickets issued before are refused | unit test (e2e covers the cookies, not a ticket held across a sign-out) |
-| The site cookie is **host-only and bound to its host** | no `Domain` attribute; the audience is signed into the token | unit tests; e2e: a site's cookie is refused on another site |
+| **Bound to the login session** | the ticket records the login session it came from; if that session has ended the ticket is refused | unit test (`TestTicketIssuedBeforeLogoutIsRefused`) |
+| The site cookie is **host-only and bound to its host** | no `Domain` attribute; the audience is stored with the session | unit tests; e2e: a site's cookie is refused on another site |
 | **`ALLOWED_HOSTS` is the gate** | hosts outside the list get `403` from `/_wap/verify`; `next` is only honored for listed hosts; tickets are only issued for listed hosts | unit tests; e2e: unlisted host refused |
 | **No open redirect** | `next` must be a local path or an absolute URL of a listed host (lookalikes such as `evilsite.com` or `site.com.evil.com` are rejected); the callback accepts a path only and rebuilds the absolute URL itself | unit tests (`//evil`, `/\evil`, `javascript:`, `user@host` tricks); e2e: `next=https://evil.example` is ignored |
 | `/_wap/verify` is **not public** | the public router of the login host excludes that path (see [reverse-proxy.md](reverse-proxy.md)) | e2e: 404 on the public router while forwardAuth keeps working |
-| Sign-out revokes cookies already issued to sites | per-user session generation | unit and e2e tests |
+| Sign-out revokes the site sessions opened from that login (this browser), or all of a user's | session tree and per-user revocation | unit and e2e tests |
 
 **Known gaps and residual risks (not covered by a test unless stated):**
 
@@ -177,7 +162,6 @@ Applies to `MODE=forward` when the protected sites are on domains unrelated to t
 - **A compromised listed site** sees its own cookie and can act as the signed-in user on that site until the cookie expires or the user signs out. It cannot reach the other sites (the cookie is bound to its host)
   and cannot obtain tickets for them (tickets are issued per requested host, only to a signed-in browser).
 - **One set of passkeys for every listed site.** There are no per-site rules: any enrolled user can open every site in the list.
-- **Restoring or deleting `users.json`.** Session generations are stored there. A backup older than a sign-out, or a recreated user, restarts at an earlier generation and revives cookies that were revoked or never expired.
-  Rotate the session key after a restore or a recovery ([enrollment.md](enrollment.md#account-recovery-lost-passkeys)). *Documented, not tested.*
+- **Restoring `sessions.json`.** A backup older than a revocation brings revoked sessions back. Delete `sessions.json` after a restore or a recovery ([enrollment.md](enrollment.md#account-recovery-lost-passkeys)). *Documented, not tested.*
 - **Misconfigured Traefik.** If `trustForwardHeader` is set to `true` without a trusted front proxy, clients can forge `X-Forwarded-Host` and `X-Forwarded-Proto`. *Not tested;* see [reverse-proxy.md](reverse-proxy.md).
 - **Login CSRF.** An attacker cannot sign a victim in as someone else without the victim approving a passkey prompt for the attacker's account. `GET /_wap/sso` only redirects; a `GET /_wap/logout` on a site does not revoke anything.

@@ -67,7 +67,7 @@ The `/` page of the forwardAuth login host is translated in `app.go` (`home`). K
 |---|---|
 | `main.go`, `config.go` | startup, servers, environment-variable configuration |
 | `app.go` | handlers: proxy, forwardAuth, login, automatic enrollment, static tool |
-| `session.go` | signed session cookies, in-memory WebAuthn ceremonies |
+| `session.go` | server-side sessions (`sessions.json`), login tickets, in-memory WebAuthn ceremonies |
 | `store.go` | JSON database (users, passkeys) |
 | `import.go` | validation and import of the static tool's JSON files |
 | `web/` | embedded pages (login, enrollment, standalone `tool.html`) |

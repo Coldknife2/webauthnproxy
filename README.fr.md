@@ -69,7 +69,7 @@ TRUSTED_PROXIES=172.18.0.0/16   # plage d'adresses de Traefik : obligatoire, per
 - traefik.http.routers.monsite.middlewares=passkey
 ```
 
-**Plusieurs domaines sans rapport ?** C'est le cas pour lequel ce mode existe (`auth.com` protège `anysite.com` et `other.org`). Avec **un seul domaine et ses sous-domaines**, il n'est pas nécessaire : [Tinyauth](https://tinyauth.app) ou [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) suffisent, et passkey-forwardauth a le meilleur modèle de session ([comparaison et ma conclusion](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth), en anglais).
+**Plusieurs domaines sans rapport ?** C'est le cas pour lequel ce mode existe (`auth.com` protège `anysite.com` et `other.org`). Avec **un seul domaine et ses sous-domaines**, il n'est pas nécessaire : [Tinyauth](https://tinyauth.app) ou [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) suffisent, et l'écart avec ce projet est faible ([comparaison et ma conclusion](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth), en anglais).
 
 Exemples complets et testés (`make examples`) : [un site derrière Traefik](examples/proxy-traefik) · [deux domaines sans rapport](examples/two-domains).
 
@@ -87,7 +87,7 @@ Fonctionnement du login multi-domaines : [docs/forwardauth.md](docs/forwardauth.
 
 L'outil statique doit être servi en HTTPS sous le domaine `RP_ID` (pas en `file://`). Détails : [docs/enrollment.md](docs/enrollment.md).
 
-Lister ou révoquer une passkey sans éditer `users.json` : `docker exec webauthnproxy /webauthnproxy passkeys list` / `passkeys revoke <id>` / `signout <utilisateur>`.
+Lister ou révoquer une passkey sans éditer `users.json` : `docker exec webauthnproxy /webauthnproxy passkeys list` / `passkeys revoke <id>` / `sessions list` / `sessions revoke <id>` / `signout <utilisateur>`.
 L'image embarque un `HEALTHCHECK` (`webauthnproxy healthcheck`).
 
 ### Configurer
@@ -97,13 +97,12 @@ L'image embarque un `HEALTHCHECK` (`webauthnproxy healthcheck`).
 | `UPSTREAM` | – | mode proxy : site à protéger |
 | `RP_ID`, `RP_ORIGINS` | – | domaine WebAuthn et origines autorisées (obligatoires) |
 | `LOGIN_URL`, `ALLOWED_HOSTS` | – | mode forward : page de login, liste blanche des sites |
-| `SESSION_SECRET` | généré | clé de signature des cookies, 32 caractères minimum |
 | `TRUSTED_PROXIES` | – | mode forward : CIDR dont les `X-Forwarded-*` sont crus (obligatoire ; jamais de confiance par défaut) |
 | `SESSION_TTL`, `SESSION_IDLE_TIMEOUT` | `12h`, désactivé | durée de session, déconnexion après inactivité |
-| `SESSION_SECRET_PREVIOUS` | – | anciennes clés de signature encore acceptées (rotation sans déconnecter tout le monde) |
+| `SESSION_BIND` | – | `ua`, `ip` ou `ua,ip` : lie une session au User-Agent / à l'adresse du navigateur |
 | `RATE_LIMIT_IP`, `RATE_LIMIT_GLOBAL` | `20/1m`, `200/1m` | requêtes de login et d'enrôlement par adresse cliente / au total (`429`) |
 | `AUDIT_LOG` | `true` | événements d'audit JSON sur la sortie standard |
-| `DATA_DIR` | `/data` | `users.json`, `session.key`, `import/` |
+| `DATA_DIR` | `/data` | `users.json`, `sessions.json`, `import/` |
 
 Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/configuration.md) · [docs/security.md](docs/security.md) · [docs/troubleshooting.md](docs/troubleshooting.md).
 
@@ -118,9 +117,8 @@ Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/conf
 
 - **Navigateur uniquement.** La connexion exige un navigateur interactif (invite de passkey et redirections). Les applis natives et mobiles, clients d'API, WebDAV/CalDAV et clients de type Vaultwarden ne peuvent pas se connecter et reçoivent `401`.
   Pour les applis qui parlent OIDC, préférez un fournisseur d'identité comme Pocket ID.
-- **Cookies sans état.** Une session est un cookie signé : la révocation se fait **par utilisateur** (« se déconnecter partout »), pas par session, et un cookie volé fonctionne jusqu'à `SESSION_TTL` (12 h par défaut) ou jusqu'à la déconnexion.
-  Faites tourner la clé sans déconnecter personne avec `SESSION_SECRET_PREVIOUS` ; retirer l'ancienne clé déconnecte tout le monde ; les passkeys ne sont pas touchées. [Détails](docs/security.md#session-tokens-hmac-signed-cookies).
-- **Pas de récupération de compte à distance.** Si toutes les passkeys sont perdues, on récupère depuis l'hôte : mettre `users.json` de côté, changer la clé de session, réenrôler avec le jeton d'amorçage.
+- **Cookies porteurs.** Une session est un cookie aléatoire gardé côté serveur : on peut la lister et la révoquer (`sessions list` / `sessions revoke`), mais un cookie volé fonctionne jusqu'à `SESSION_TTL` (12 h par défaut), au délai d'inactivité ou à sa révocation. `SESSION_BIND` (optionnel) la lie au User-Agent/à l'adresse du navigateur. [Détails](docs/security.md#sessions-server-side) (en anglais).
+- **Pas de récupération de compte à distance.** Si toutes les passkeys sont perdues, on récupère depuis l'hôte : mettre `users.json` et `sessions.json` de côté, réenrôler avec le jeton d'amorçage.
   **Enrôlez au moins deux passkeys** sur des authenticators différents. [Procédure](docs/enrollment.md#account-recovery-lost-passkeys).
 - **Nouveau, non audité, un seul mainteneur.** Premier commit le 2026-10-14. Limitation de débit et journal d'audit minimaux (par processus, en mémoire), une seule instance (pas de haute disponibilité), pas de règles par site : toute passkey enrôlée ouvre tous les sites listés.
 
@@ -131,7 +129,7 @@ Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/conf
 - Vous avez besoin de plusieurs utilisateurs avec des groupes, des règles par site ou une administration déléguée.
 - L'environnement est critique ou doit être audité, ou vous avez besoin de haute disponibilité, de révocation par session ou de liaison IP/appareil.
 - Vous n'avez besoin que d'`auth_request` nginx : [Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) est maintenu depuis 2022.
-- Vos sites partagent un seul domaine et il vous faut seulement le forward-auth Traefik : [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) a la révocation par session ; l'avantage de ce projet est ailleurs ([pourquoi](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth), en anglais).
+- Vos sites partagent un seul domaine et il vous faut seulement le forward-auth Traefik : [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) ou Tinyauth font le travail et sont plus anciens ; l'avantage de ce projet est ailleurs ([pourquoi](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth), en anglais).
 
 ## Pourquoi celui-ci
 

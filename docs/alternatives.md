@@ -38,30 +38,31 @@ Small services that put a passkey login in front of other sites.
 **What this repo adds** to Quiq/webauthn_proxy: a built-in reverse proxy, Traefik forwardAuth tested end to end, login across unrelated domains with an allowlist of sites, username-less login,
 an enrollment page protected by passkeys and an import path that needs no restart, a container image published by CI, and automated tests including a real-browser suite.
 
-**What it lacks** compared with them: server-side sessions with per-session revocation and client binding (User-Agent/IP) as in passkey-forwardauth, its shared-secret check on the proxy,
-`.deb`/`.rpm` packaging, and, most of all, **time in use**: Quiq's project has been maintained since 2022, this one is new and unaudited.
+**What it lacks** compared with them: passkey-forwardauth's shared-secret check on the proxy, `.deb`/`.rpm` packaging, and, most of all, **time in use**:
+Quiq's project has been maintained since 2022, this one is new and unaudited.
 
 ### Why this project rather than passkey-forwardauth?
 
-[passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) is the closest project and, on sessions, the more careful one. Read it first.
+[passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) is the closest project. Read it first. Its server-side sessions (random token, hash stored, per-session revocation, idle limit, User-Agent and IP checks)
+are the model this project's sessions were rebuilt on after a first comparison, so that gap is closed rather than a reason to choose either.
 
-**Real differences in favor of this repo (two):**
+**Real differences in favor of this repo:**
 
 1. **A built-in proxy mode.** `MODE=proxy` relays traffic to one upstream, so a site without Traefik, Caddy or nginx in front can be protected with one container. passkey-forwardauth only does forward-auth.
 2. **One login for unrelated domains** through a host list (`ALLOWED_HOSTS`): `auth.com` can protect `anysite.com` and `other.org`. passkey-forwardauth shares one `cookie_domain`.
+3. **Sessions that survive a restart** (saved to `sessions.json`; in passkey-forwardauth's code they live in memory only, as far as I read), a login/site tree ("sign out of this browser" versus "all devices"), a `sessions list|revoke` command, and a rate limit on every login endpoint (it limits bootstrap only).
 
 **What passkey-forwardauth does better:**
 
-- **Server-side sessions with per-session revocation**: one stolen session can be killed alone; here, sign-out revokes every session of the user at once, and a stolen cookie works until it expires (or the user signs out).
-- Client binding (User-Agent/IP hash), a shared-secret header on top of the trusted-proxy CIDRs, a `.deb`/`.rpm` and a systemd unit, a bootstrap that only listens on loopback.
+- A shared-secret header on top of the trusted-proxy CIDRs, a `.deb`/`.rpm` and a systemd unit, a bootstrap that only listens on loopback, and User-Agent/IP binding that is always on (here it is opt-in, `SESSION_BIND`).
+- It is older by six months (since 2026-04-17, against 2026-10-14 here): little, but more.
 
 **Which one should you pick?**
 
-- **One domain with subdomains, forward-auth with Traefik**: passkey-forwardauth or [Tinyauth](https://tinyauth.app) are enough, and passkey-forwardauth has the stronger session model. The cross-domain feature does not apply to you.
+- **One domain with subdomains, forward-auth with Traefik**: passkey-forwardauth or [Tinyauth](https://tinyauth.app) are enough. The cross-domain feature does not apply to you and the remaining differences are small. Either is a fair choice.
 - **A site with no reverse proxy in front, or several unrelated domains** behind one Traefik: this is where this repo has a reason to exist. These are narrow cases.
-- Everything else, **there is no solid reason to prefer this project today**: the gap that matters (sessions) is on the other side, and passkey-forwardauth is older by six months (since 2026-04-17, against 2026-10-14 here), which is little, but is more.
 
-The lines above are about features read in the code and documentation on 2026-10-14; passkey-forwardauth was not run for this comparison.
+These lines are about features read in the code and documentation on 2026-10-14 (sessions code re-read at commit 8f8c63b); passkey-forwardauth was not run for this comparison.
 
 ## Identity platforms: a different job
 

@@ -16,7 +16,7 @@ First release. Everything below is new; nothing is claimed beyond what the tests
 - Username-less login (discoverable credentials), user verification required by default; users in one atomically written JSON file.
 - **Automatic enrolment** (`ENROLL_ENABLED`, port 8081) protected by existing passkeys, with a bootstrap token while no passkey exists; the last passkey cannot be deleted.
   **Static enrolment tool** (`TOOL_ENABLED`, port 8082) producing a JSON file imported by hand into `DATA_DIR/import/`.
-- `webauthnproxy passkeys list`, `passkeys revoke <id>` and `signout <user>`, through a private Unix socket (`DATA_DIR/admin.sock`, mode 0600); no more editing `users.json`.
+- `webauthnproxy passkeys list`, `passkeys revoke <id>`, `sessions list`, `sessions revoke <id>` and `signout <user>`, through a private Unix socket (`DATA_DIR/admin.sock`, mode 0600); no more editing `users.json`.
 - `GET /_wap/healthz`, `webauthnproxy healthcheck` and a `HEALTHCHECK` in the image; `/data` is owned by the unprivileged user so named volumes work without `chown`.
 - Two complete examples run by `make examples` (compose, Chromium with a virtual passkey): `examples/proxy-traefik` and `examples/two-domains`.
 - Container images (`linux/amd64`, `linux/arm64`) published to GHCR by GitHub Actions on `main` and on `v*` tags; release binaries and checksums attached to tagged releases.
@@ -26,12 +26,13 @@ First release. Everything below is new; nothing is claimed beyond what the tests
 - **Rate limiting** on login and enrolment, per client address (IPv6 grouped by /64) and globally: `RATE_LIMIT_IP` (`20/1m`), `RATE_LIMIT_GLOBAL` (`200/1m`), `429` with `Retry-After`.
 - **`TRUSTED_PROXIES`**: `X-Forwarded-*` is believed only from the declared CIDRs, never by default. Forward mode requires it and `/_wap/verify` answers `403` to other callers;
   proxy mode strips forged forwarded headers from untrusted clients. `COOKIE_SECURE` (`auto`, `true`, `false`).
-- **Session key rotation** without signing anyone out (`SESSION_SECRET_PREVIOUS`, `session.key.previous`).
-- **Idle timeout** without server state (`SESSION_IDLE_TIMEOUT`); with Traefik it needs `addAuthCookiesToResponse: [wap_session]`.
+- **Server-side sessions**, modelled on passkey-forwardauth's: a random 256-bit cookie, only its SHA-256 stored (`DATA_DIR/sessions.json`, mode 0600, survives restarts); no signing key to rotate or leak.
+  Revoke one session (`sessions list`, `sessions revoke <id>`), all of a user's (`signout <user>`, "sign out of all devices"), or this browser's (login session and the sites opened from it).
+  Exact **idle timeout** (`SESSION_IDLE_TIMEOUT`, no Traefik option needed) and optional **binding** to User-Agent and/or address (`SESSION_BIND`).
 - **JSON audit log** on standard output (`AUDIT_LOG`): sign-in success/failure, enrolment, credential deletion, sign-out, ticket and host refusals, rate limiting. No secret in it.
-- Signing out **revokes** every session and ticket of the user (per-user generation stored in `users.json`); on a protected site only `POST /_wap/logout` revokes, `GET` just clears that site's cookie.
-- Tickets are **single-use in the memory of the issuing process only**; they carry the identifier of that process, so a ticket never survives a restart and another instance refuses it. Tests cover replay, restart and two instances ([docs/security.md](docs/security.md#single-use-of-tickets)).
-- `SESSION_SECRET` must have 32 characters at least; tokens are HMAC-SHA256 signed with separate signing domains for sessions and tickets.
+- Signing out ends the browser's login session and its site sessions; on a protected site only `POST /_wap/logout` revokes, `GET` just clears that site's cookie.
+- Tickets are random, kept in memory and **removed on first presentation** (even a refused one): single use is exact within the process, never persisted or shared; a ticket never survives a restart and another instance refuses it. Tests cover replay, restart, two instances and the wrong site ([docs/security.md](docs/security.md#single-use-of-tickets)).
+- `SESSION_SECRET` and `SESSION_SECRET_PREVIOUS` are ignored (a warning is logged): there is no signing key.
 - The post-login redirect only accepts a local path or an absolute URL of an allowed site (no open redirect).
 
 ### Documentation

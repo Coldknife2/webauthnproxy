@@ -1,9 +1,24 @@
-# Performance
+# Performance (experimental)
 
 [← README](../README.md)
 
-webauthnproxy is built to stay out of the way: a single static Go binary, no database server, no password hashing, stateless cookies.
-Measured in the same conditions against [Authelia](https://www.authelia.com/) and [Pocket ID](https://github.com/pocket-id/pocket-id) + [Tinyauth](https://github.com/tinyauthapp/tinyauth):
+> **Experimental.** These numbers come from one experiment on one machine. They are here to document the approach and let you rerun it, not as an argument for choosing this project.
+> The products compared do more than this one does, so the comparison is unequal by construction (see [Caveats](#caveats)).
+
+## The approach
+
+**Hypothesis.** The design choices (a static Go binary, users in a JSON file read once, stateless HMAC-signed cookies instead of server-side sessions) should keep memory and CPU low, because a check is a signature verification and a map lookup.
+
+**Experiment.** Run the same authenticated forward-auth check against webauthnproxy, [Authelia](https://www.authelia.com/) and [Pocket ID](https://github.com/pocket-id/pocket-id) + [Tinyauth](https://github.com/tinyauthapp/tinyauth)
+in containers, with the same load generator, and read memory and CPU from `/proc`.
+
+**What it showed.** Idle memory and image size are much lower here; per-request CPU is lower by a smaller factor. The first run also exposed waste in our own hot path
+(a copy of the user record per request, a fresh HMAC per check, URL parsing for ordinary requests); fixing it made a check about 30 % faster (see [What keeps it light](#what-keeps-it-light)).
+
+**What it does not show.** That this project is "better": the others keep sessions server-side (so they can revoke one session), apply access rules, and Pocket ID is a complete identity provider.
+Lower memory is what you get for not doing those things.
+
+## Results (2026-10-14)
 
 | | webauthnproxy | Authelia v4.39.28 | Pocket ID v2.18 + Tinyauth v5.2 |
 |---|---|---|---|

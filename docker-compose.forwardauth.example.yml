@@ -32,7 +32,8 @@ services:
     labels:
       - traefik.enable=true
       # Login host (public)
-      - traefik.http.routers.auth.rule=Host(`auth.example.com`)
+      # /_wap/verify is for Traefik only (it reaches it directly, not through this router): keep it off the public router
+      - traefik.http.routers.auth.rule=Host(`auth.example.com`) && !PathPrefix(`/_wap/verify`)
       - traefik.http.routers.auth.entrypoints=websecure
       - traefik.http.routers.auth.tls.certresolver=le
       - traefik.http.services.auth.loadbalancer.server.port=8080

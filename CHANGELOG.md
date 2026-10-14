@@ -4,6 +4,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ## [Unreleased]
 
+### Documentation
+- README restructured: security notes, limitations, "when not to use it"; prior art cited (Quiq/webauthn_proxy, passkey-forwardauth and others, dated, with sources) in `docs/alternatives.md`, with an experiment showing Tinyauth v5.2.0 does not cover unrelated domains.
+- New `docs/reverse-proxy.md` (forwarded headers, `RP_ORIGINS`, what must stay private); cross-domain threat model and test coverage in `docs/security.md`; account recovery procedure; performance figures presented as an experiment.
+
 ### Security
 - Signing out now **revokes** every session and ticket of the user (per-user session generation stored in `users.json`), on all sites and devices; on a protected site only `POST /_wap/logout` revokes, `GET` just clears that site's cookie.
 - `SESSION_SECRET` must now be at least 32 characters (was 16).
@@ -13,6 +17,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 - Hot path (`/_wap/verify`) optimized: pooled HMAC, no user copy per request, no URL parsing for ordinary requests (~30 % faster, 25 → 17 allocations).
 
 ### Added
+- `GET /_wap/verify` is excluded from the login host's public router in the forwardAuth example; e2e checks cover host-bound tickets, the open-redirect refusal and that the public router does not expose `/_wap/verify`.
 - Footprint comparison with Pocket ID + Tinyauth alongside Authelia (`make bench`), and a language comparison of the hot path in Go, Rust, .NET, Node and Python (`make bench-langs`); see `docs/performance.md` and `docs/language-choice.md`.
 - Footprint benchmark against Authelia (`make bench`) and Go micro-benchmarks (`make bench-go`); results in `docs/performance.md`.
 - Documentation split: short README (quick start first), details in `docs/`; comparison with Pocket ID + Tinyauth and Authelia; manual run of the CI on `main` to publish images.

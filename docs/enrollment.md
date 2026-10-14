@@ -10,7 +10,7 @@ refuses insecure contexts outside `localhost`. Two tools, enabled independently:
 | Enable with | `ENROLL_ENABLED=true` | `TOOL_ENABLED=true` |
 | Port | `8081` (`ENROLL_LISTEN`) | `8082` (`TOOL_LISTEN`) |
 | Access | **protected**: sign in with an existing passkey | none needed: the page has no state and no write access |
-| Recommended exposure | private (defense in depth) | may be public |
+| Exposure | **never public**: loopback or a private network, only while you enroll | **never public**: harmless if reached (no state, no writes), but no reason to publish it |
 | Adding a passkey | instant, from the page | an administrator copies a JSON file into `DATA_DIR/import/` |
 | First passkey | bootstrap token (logs) | no token needed |
 
@@ -38,7 +38,7 @@ To enroll **without exposing any write API**: a standalone HTML page ([`web/tool
 
 The page must be served over **HTTPS under the `RP_ID` domain** (e.g. `https://tool.example.com`), or on `localhost` with `RP_ID=localhost`:
 **a file opened directly (`file://`) does not work**; this is a browser rule. The tool's origin does not need to be in `RP_ORIGINS`.
-The tool can also be hosted as-is (it is a single file) on any static site under the same domain.
+To use it on a real domain, serve it over a VPN or an IP-restricted route (see [reverse-proxy.md](reverse-proxy.md)) and take it down afterwards.
 
 What the proxy **checks** on import: format version, passkey created for the right domain (`rpIdHash`), user presence/verification flags, valid COSE
 public key, consistent credential ID, user ID consistent with the name, no duplicate. Format (version 1):
@@ -55,7 +55,24 @@ public key, consistent credential ID, user ID consistent with the name, no dupli
 The `import/` folder is watched continuously: **only someone who can write to the data volume can add a passkey this way**.
 To add a second device to a user, run the tool again with the **same name**.
 
-## Losing all passkeys
+## Account recovery (lost passkeys)
 
-Stop the service, delete `data/users.json`, restart with `ENROLL_ENABLED=true`: a new bootstrap token is printed in the logs.
-(Or drop a file produced by the static tool into `data/import/`.)
+**There is no remote recovery by design**: no e-mail, no SMS, no recovery code. Whoever can write to the data volume can recover; nobody else can.
+
+**Prevent it: enroll at least two passkeys** per user, on different authenticators (for example a synced platform passkey and a hardware security key kept elsewhere).
+The service refuses to delete the last passkey, so you cannot lock yourself out from the enrollment page.
+
+**If every passkey is lost:**
+
+1. Stop the container.
+2. Move the user database aside: `mv data/users.json data/users.json.lost`.
+3. **Rotate the session key** so no old cookie can come back to life: delete `data/session.key`, or change `SESSION_SECRET`.
+   (Revocation state lives in `users.json`; a recreated user starts again at generation 0, which would make an old, unexpired cookie for the same user name valid again.)
+4. Start again with `ENROLL_ENABLED=true` and read `Enrollment bootstrap token: …` in the logs.
+5. Open the enrollment page, enter the token, create the first passkey, then a second one. Restart without `ENROLL_ENABLED`.
+
+Alternative without opening port 8081: create a passkey with the static tool on a new authenticator and drop the JSON file into `data/import/` (step 3 still applies).
+
+**Same caution when restoring a backup of `users.json`:** a copy older than a sign-out contains the older session generation, so cookies revoked by that sign-out work again. Rotate the session key after a restore.
+
+*What is tested:* the empty-database bootstrap (first passkey with the token) and the import path are covered by the unit and e2e tests. The file-deletion procedure above reaches the same empty state but is not exercised as a scenario of its own, and the cookie-revival caveat is documented, not tested.

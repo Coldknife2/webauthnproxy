@@ -1,0 +1,13 @@
+http:
+  routers:
+    auth: {rule: "Host(`auth.test.local`)", service: auth, entryPoints: [web]}
+    inside: {rule: "Host(`x.test.local`)", service: app, entryPoints: [web], middlewares: [tinyauth]}
+    other: {rule: "Host(`a.siteone.test`)", service: app, entryPoints: [web], middlewares: [tinyauth]}
+  middlewares:
+    tinyauth:
+      forwardAuth:
+        address: http://127.0.0.1:3000/api/auth/traefik
+        authResponseHeaders: [Remote-User]
+  services:
+    auth: {loadBalancer: {servers: [{url: "http://127.0.0.1:3000"}]}}
+    app:  {loadBalancer: {servers: [{url: "http://127.0.0.1:9000"}]}}

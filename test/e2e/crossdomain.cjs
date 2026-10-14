@@ -16,7 +16,7 @@ const dyn = path.join(data, "dyn.yml");
 const site = (name, host) => `    ${name}: {rule: "Host(\`${host}\`)", service: app, entryPoints: [web], middlewares: [wap]}\n`;
 fs.writeFileSync(dyn, `http:
   routers:
-    auth: {rule: "Host(\`auth.test.local\`)", service: auth, entryPoints: [web]}
+    auth: {rule: "Host(\`auth.test.local\`) && !PathPrefix(\`/_wap/verify\`)", service: auth, entryPoints: [web]}
 ${site("one", "a.siteone.test")}${site("two", "b.sitetwo.test")}${site("nope", "c.unlisted.test")}  middlewares:
     wap: {forwardAuth: {address: "http://127.0.0.1:8080/_wap/verify", authResponseHeaders: [X-Authenticated-User]}}
   services:
@@ -87,6 +87,26 @@ const raw = (host, urlPath, headers = {}) => new Promise((res, rej) => http.get(
     await page.goto("http://c.unlisted.test:8000/");
     assert.equal(await page.textContent("body").then((t) => t.trim()), "host not allowed");
     step("a host that is not in ALLOWED_HOSTS is refused (403)");
+
+    // /_wap/verify is for Traefik only: the public router of the login host must not expose it
+    assert.equal((await raw("auth.test.local:8000", "/_wap/verify", { "X-Forwarded-Host": "a.siteone.test:8000" })).status, 404);
+    step("the public login host does not expose /_wap/verify (the forwardAuth address still works)");
+
+    // a ticket is bound to the host it was issued for
+    const authCookie = (await ctx.cookies()).find((c) => c.name === "wap_session" && c.domain === "auth.test.local");
+    const sso = await raw("auth.test.local:8000", "/_wap/sso?next=" + encodeURIComponent("http://a.siteone.test:8000/p"), { Cookie: `wap_session=${authCookie.value}` });
+    const fresh = new URL(sso.headers.location);
+    assert.equal(fresh.host, "a.siteone.test:8000");
+    const ticketPath = fresh.pathname + fresh.search;
+    assert.equal((await raw("b.sitetwo.test:8000", ticketPath)).status, 403);
+    assert.equal((await raw("a.siteone.test:8000", ticketPath)).status, 302);
+    step("a fresh ticket is refused on another site and accepted on the site it was issued for");
+
+    // the post-login redirect cannot leave the allowed hosts
+    await page.goto("http://auth.test.local:8000/_wap/login?next=" + encodeURIComponent("https://evil.example/steal"));
+    await page.click("#go");
+    await page.waitForURL("http://auth.test.local:8000/");
+    step("a next= pointing outside ALLOWED_HOSTS is ignored (open redirect refused)");
 
     // sign out everywhere: a copied site cookie stops working at once
     const copied = { Accept: "application/json", Cookie: `wap_session=${one.value}` };

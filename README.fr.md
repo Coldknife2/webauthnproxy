@@ -36,18 +36,6 @@ docker logs webauthnproxy        # copiez « Enrollment bootstrap token: … »
 `UPSTREAM` est le site protégé. Mettez le vôtre : toute URL joignable depuis le conteneur.
 Podman : remplacez `docker` par `podman` ; rootless : `podman unshare chown 65532:65532 data`.
 
-## Léger
-
-| | webauthnproxy | Authelia | Pocket ID + Tinyauth |
-|---|---|---|---|
-| Mémoire au repos | **8 Mio** | 163 Mio | 90 Mio |
-| CPU au repos | **0 %** | 0,05 % | 0,10 % |
-| Image | **12 Mio** | 77 Mio | 128 Mio |
-| Vérifications, 32 connexions | **35k req/s** | 20k req/s | 3,8k req/s |
-| Mémoire max sous charge | **15 Mio** | 208 Mio | 98 Mio |
-
-Même machine, même charge, vérification forward-auth authentifiée. Ils font plus que nous (section suivante). Méthode et limites : [docs/performance.md](docs/performance.md) (en anglais).
-
 ## Installation
 
 ```yaml
@@ -105,6 +93,7 @@ Fonctionnement du login multi-domaines : [docs/forwardauth.md](docs/forwardauth.
 | Activer | `ENROLL_ENABLED=true` | `TOOL_ENABLED=true` |
 | Port | `8081` | `8082` |
 | Protégé par | vos passkeys existantes (jeton pour la première) | rien : sans état, sans écriture |
+| Exposition | **jamais publique** : loopback ou réseau privé, uniquement pendant l'enrôlement | **jamais publique** (inoffensif si atteint, mais aucune raison de la publier) |
 | Ajouter une passkey | dans la page | copier le JSON fourni dans `data/import/` |
 
 L'outil statique doit être servi en HTTPS sous le domaine `RP_ID` (pas en `file://`). Détails : [docs/enrollment.md](docs/enrollment.md).
@@ -122,7 +111,52 @@ L'outil statique doit être servi en HTTPS sous le domaine `RP_ID` (pas en `file
 
 Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/configuration.md) · [docs/security.md](docs/security.md) · [docs/troubleshooting.md](docs/troubleshooting.md).
 
+## Notes de sécurité
+
+- **Le login multi-domaines** utilise des tickets à usage unique valables 60 secondes, liés au site cible ; seuls les sites listés dans `ALLOWED_HOSTS` peuvent utiliser le login, et le cookie de chaque site est lié à son hôte.
+  Modèle de menace, limites connues et ce qui est testé : [docs/security.md](docs/security.md#cross-domain-login-threat-model) (en anglais).
+- **Derrière Traefik :** laissez `trustForwardHeader` désactivé, gardez `/_wap/verify` hors du routeur public, et **n'exposez jamais les ports 8081 et 8082**.
+  `RP_ORIGINS` est vérifié par rapport à l'origine signée par le navigateur, pas par rapport à `Host` ni `X-Forwarded-*`. Détails : [docs/reverse-proxy.md](docs/reverse-proxy.md).
+
+## Limites
+
+- **Navigateur uniquement.** La connexion exige un navigateur interactif (invite de passkey et redirections). Les applis natives et mobiles, clients d'API, WebDAV/CalDAV et clients de type Vaultwarden ne peuvent pas se connecter et reçoivent `401`.
+  Pour les applis qui parlent OIDC, préférez un fournisseur d'identité comme Pocket ID.
+- **Cookies sans état.** Une session est un cookie signé : la révocation se fait **par utilisateur** (« se déconnecter partout »), pas par session, et un cookie volé fonctionne jusqu'à `SESSION_TTL` (12 h par défaut) ou jusqu'à la déconnexion.
+  Changer `SESSION_SECRET` (ou supprimer `data/session.key`) déconnecte tout le monde d'un coup ; les passkeys ne sont pas touchées. [Détails](docs/security.md#session-tokens-hmac-signed-cookies).
+- **Pas de récupération de compte à distance.** Si toutes les passkeys sont perdues, on récupère depuis l'hôte : mettre `users.json` de côté, changer la clé de session, réenrôler avec le jeton d'amorçage.
+  **Enrôlez au moins deux passkeys** sur des authenticators différents. [Procédure](docs/enrollment.md#account-recovery-lost-passkeys).
+- **Nouveau, non audité, un seul mainteneur.** Premier commit le 2026-10-14. Pas de limitation de débit, pas de journal d'audit, une seule instance (pas de haute disponibilité), pas de règles par site : toute passkey enrôlée ouvre tous les sites listés.
+
+## Quand ne PAS l'utiliser
+
+- Vos applis parlent OIDC : utilisez un fournisseur d'identité (Pocket ID, Authelia).
+- Des clients natifs, des API, du WebDAV ou des applis mobiles doivent continuer à fonctionner via les mêmes noms d'hôte.
+- Vous avez besoin de plusieurs utilisateurs avec des groupes, des règles par site ou une administration déléguée.
+- L'environnement est critique ou doit être audité, ou vous avez besoin de haute disponibilité, de révocation par session, de limitation de débit ou de liaison IP/appareil.
+- Vous n'avez besoin que d'`auth_request` nginx : [Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) est maintenu depuis 2022 (voir ci-dessous).
+
 ## Pourquoi
+
+**Ce n'est pas la première passerelle à passkeys.** [Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) existe depuis le 2022-01-03 (`auth_request` nginx, dernier commit le 2026-08-18) et
+[passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) (forward-auth, depuis le 2026-04-17) est proche de ce projet. Liste datée, sources et détails : [docs/alternatives.md](docs/alternatives.md) (en anglais).
+
+| | ce dépôt | Quiq/webauthn_proxy | passkey-forwardauth |
+|---|---|---|---|
+| Relaie lui-même le trafic vers un upstream | ✅ | ❌ | ❌ |
+| `forwardAuth` Traefik | ✅ testé de bout en bout | non documenté | ✅ |
+| Un login pour des **domaines sans rapport** | ✅ | ❌ un seul domaine de cookie | ❌ un seul domaine de cookie |
+| Connexion sans nom d'utilisateur | ✅ | ❌ | ✅ |
+| Enrôlement | page protégée par passkey, ou outil statique + import sans redémarrage | page → coller dans `credentials.yml` → redémarrer | admin d'amorçage sur loopback |
+| Sessions | cookie signé, révocation par utilisateur | cookie signé | côté serveur, révocation par session |
+| Limitation de débit | ❌ | ❌ | amorçage seulement |
+| Image / tests | GHCR via la CI / unitaires + e2e | Docker Hub / aucun dans le dépôt | `.deb`/`.rpm` / unitaires |
+| Ancienneté | premier commit le 2026-10-14 | depuis le 2022-01-03 | depuis le 2026-04-17 |
+
+**Apporté ici :** un mode proxy intégré, la connexion entre domaines sans rapport avec une liste de sites autorisés, la connexion sans nom d'utilisateur, un enrôlement sans redémarrage, et une suite de bout en bout avec un vrai Traefik.
+**Manquant ici :** révocation par session et délai d'inactivité, limitation de débit, confiance dans les en-têtes transmis seulement depuis des proxys connus, rotation de clé sans déconnecter tout le monde, et surtout l'ancienneté.
+
+### Les plateformes d'identité font un autre métier
 
 **Pocket ID, Tinyauth et Authelia sont de bons projets, et ils font un autre métier.** Ce sont des plateformes d'identité et de SSO :
 utilisateurs et groupes, OIDC pour vos applis, règles d'accès par site, interfaces d'administration, matures et très utilisées.
@@ -137,7 +171,8 @@ Ce que dit la documentation officielle (lue le 14/10/2026) :
 - **[Tinyauth](https://github.com/tinyauthapp/tinyauth)** est ce proxy : forward-auth avec [utilisateur/mot de passe (+ TOTP), LDAP et OpenID Connect](https://tinyauth.app/docs/reference/authentication/) ;
   il n'a pas de passkey en propre et documente [Pocket ID comme moyen d'en avoir](https://tinyauth.app/docs/guides/pocket-id/).
   Il pose son cookie « pour le domaine parent de l'URL de l'application », ses applis étant des sous-domaines ([configuration du domaine](https://tinyauth.app/docs/getting-started/)) ;
-  son code refuse les applis hors de ce domaine (`domain does not match cookie domain`).
+  son code refuse les applis hors de ce domaine (`domain does not match cookie domain`), ce que j'ai reproduit avec Tinyauth v5.2.0 derrière Traefik le 2026-10-14
+  ([expérience](docs/alternatives.md#experiment-one-login-for-two-unrelated-domains-with-tinyauth) ; Pocket ID ne faisait pas partie de ce test).
 - **[Authelia](https://www.authelia.com/overview/authentication/security-key/)** propose la connexion par passkey sans mot de passe depuis la v4.39, mais « la passkey est un seul facteur » : un mot de passe peut rester demandé
   pour appliquer une politique `two_factor` (une option expérimentale permet à une passkey avec vérification utilisateur de la satisfaire). Chaque [domaine de cookie](https://www.authelia.com/configuration/session/introduction/) est associé
   à un `authelia_url` situé dans ce domaine : des domaines sans rapport donnent des portails et des connexions séparés.
@@ -145,7 +180,7 @@ Ce que dit la documentation officielle (lue le 14/10/2026) :
 | | webauthnproxy | Pocket ID + Tinyauth | Authelia |
 |---|---|---|---|
 | Conteneurs à faire tourner | 1 | 2 (+ Traefik) | 1 (+ stockage) |
-| Un login pour des **domaines sans rapport** | ✅ échange de ticket | ❌ un seul domaine de cookie | un portail et une connexion par domaine |
+| Un login pour des **domaines sans rapport** | ✅ échange de ticket | ❌ un seul domaine de cookie (testé : Tinyauth v5.2.0) | un portail et une connexion par domaine (d'après sa documentation, non testé) |
 | Proxy intégré (ni Traefik, Caddy, Nginx) | ✅ | ❌ | ❌ |
 | SSO OIDC pour d'autres applis | ❌ | ✅ | ✅ |
 | Règles par site, groupes, plusieurs admins | ❌ | ✅ basique (règles par appli Tinyauth, groupes Pocket ID) | ✅ |
@@ -161,10 +196,9 @@ make check   # gofmt, vet, tests (race)
 make e2e     # Chromium + passkey virtuelle ; Traefik en conteneur
 make build   # ./webauthnproxy
 make image   # image de conteneur
-make bench   # empreinte mémoire/CPU vs Authelia
 ```
 
-Pourquoi Go plutôt que Rust, .NET, Node ou Python : [docs/language-choice.md](docs/language-choice.md) (en anglais).
+Les mesures de performance sont une **expérience**, pas une promesse : comment elles ont été faites, et ce qu'elles montrent ou non, est dans [docs/performance.md](docs/performance.md) (en anglais ; `make bench`).
 
 La CI ([`ci.yml`](.github/workflows/ci.yml)) teste, puis construit et pousse l'image sur `ghcr.io` pour `main` et les tags `v*`.
 Mise en place et publication : [CONTRIBUTING.md](CONTRIBUTING.md#set-up-ci-and-publish-images). Vulnérabilités : [SECURITY.md](SECURITY.md).

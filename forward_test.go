@@ -184,3 +184,15 @@ func TestSharedCookieDomainStillWorks(t *testing.T) {
 		t.Fatalf("sso inside cookie domain: %s", w.Header().Get("Location"))
 	}
 }
+
+func TestCallbackNeverRedirectsOffSite(t *testing.T) {
+	a := forwardApp(t)
+	addUser(t, a)
+	for _, next := range []string{"//evil.com/x", `/\evil.com`, "https://evil.com/", "javascript:alert(1)", "http://anysite.com@evil.com/", ""} {
+		ticket := a.sessions.NewTicket("remi", "anysite.com", 0)
+		w := verifyReq(a, "anysite.com", "/_wap/callback?ticket="+url.QueryEscape(ticket)+"&next="+url.QueryEscape(next), "")
+		if w.Code != 302 || w.Header().Get("Location") != "https://anysite.com/" {
+			t.Errorf("next=%q -> %d %q, want a redirect to the site root", next, w.Code, w.Header().Get("Location"))
+		}
+	}
+}

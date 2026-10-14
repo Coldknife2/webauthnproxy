@@ -51,4 +51,5 @@ Security properties of the exchange:
   `POST https://anysite.com/_wap/logout` bumps the user's session generation: every cookie and ticket issued before, on any site or device, stops working immediately,
   even if someone copied it. A `GET` on `/_wap/logout` only clears the cookie of that site (a link on a hostile page cannot sign you out everywhere).
   Revocation is per user, not per session. The `/_wap/` prefix is reserved on protected sites too.
-- `/_wap/verify` must only be reachable by Traefik (internal network). There are no per-site rules: any enrolled passkey grants access to **all** listed sites.
+- `/_wap/verify` must only be reachable by Traefik: exclude it from the login host's public router. There are no per-site rules: any enrolled passkey grants access to **all** listed sites.
+- Threat model, what is tested and what is not: [security.md](security.md#cross-domain-login-threat-model). Traefik headers and exposure: [reverse-proxy.md](reverse-proxy.md).

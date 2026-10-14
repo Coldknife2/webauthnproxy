@@ -45,7 +45,7 @@ services:
       # - traefik.http.routers.enroll.service=enroll
       # - traefik.http.services.enroll.loadbalancer.server.port=8081
       # - traefik.http.middlewares.lan.ipallowlist.sourcerange=192.168.0.0/16,10.0.0.0/8
-      # Static tool (stateless, may be public): must be served over HTTPS under the RP_ID domain
+      # Static tool (stateless, but never publish it either): needs HTTPS under the RP_ID domain, so serve it on a private route (VPN / IP allowlist)
       # - traefik.http.routers.tool.rule=Host(`tool.example.com`)
       # - traefik.http.routers.tool.entrypoints=websecure
       # - traefik.http.routers.tool.tls.certresolver=le

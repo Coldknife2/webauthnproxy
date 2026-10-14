@@ -26,4 +26,4 @@ Everything is set through environment variables.
 | `PRESERVE_HOST` | `false` | Proxy mode: forward the client's `Host` to the upstream |
 | `USER_HEADER` | `X-Authenticated-User` | Header carrying the user |
 
-Ports: only `8080` should be publicly exposed (through Traefik); keep `8081` private; `8082` is harmless but pointless outside enrollment phases.
+Ports: only `8080` is meant to be reached by the public (through Traefik). **Never expose `8081` or `8082`**: loopback or a private network, and only while you enroll ([reverse-proxy.md](reverse-proxy.md)).

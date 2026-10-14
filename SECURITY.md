@@ -18,5 +18,5 @@ The project is young: only the latest release (or the `main` branch) receives fi
 In scope: authentication bypass, session fixation/forgery, ticket replay or cross-site session reuse in forward mode, open redirect, leakage of the session cookie or secrets, CSRF on the
 enrollment endpoints, unvalidated passkey import.
 
-Out of scope (see the [Security model](README.md#security-model) in the README): denial of service through request volume
+Out of scope (see the [security model](docs/security.md)): denial of service through request volume
 (use your reverse proxy's rate limiting), compromise of the server or the `/data` volume, vulnerabilities in the protected site itself.

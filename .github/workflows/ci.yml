@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -63,7 +64,7 @@ jobs:
       contents: read
       packages: write
     env:
-      PUSH: ${{ github.event_name == 'push' }}
+      PUSH: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
       # Optional second registry: only used when the DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets exist.
       DH_IMAGE: ${{ secrets.DOCKERHUB_USERNAME != '' && format('docker.io/{0}/webauthnproxy', secrets.DOCKERHUB_USERNAME) || '' }}
     steps:

@@ -28,24 +28,29 @@ make image   # container image
 - No new dependency without a justification in the PR.
 - Clear commits in the imperative mood ("Add…", "Fix…"). One PR, one topic.
 
-## Releasing and publishing images
+## Set up CI and publish images
 
-Images are published by the `image` job of [`ci.yml`](.github/workflows/ci.yml), only after `test` and `e2e` pass:
+The `image` job of [`ci.yml`](.github/workflows/ci.yml) runs after `test` and `e2e` and pushes to `ghcr.io/<owner>/webauthnproxy`
+(`linux/amd64` + `linux/arm64`). Pull requests only build and smoke-test the image.
 
-- every push to `main` publishes `ghcr.io/coldknife2/webauthnproxy` with the tags `latest`, `main` and `sha-<commit>`;
-- pushing a tag `vX.Y.Z` publishes `X.Y.Z`, `X.Y` and `X` (no `X` tag for `0.x`); `latest` always follows `main`;
-- images are built for `linux/amd64` and `linux/arm64` (cross-compiled, no emulation); pull requests build and smoke-test the image without pushing.
+| Event | Tags pushed |
+|---|---|
+| push to `main` | `latest`, `main`, `sha-<commit>` |
+| tag `vX.Y.Z` | `X.Y.Z`, `X.Y`, `X` (no `X` for `0.x`) |
+| manual run on `main` (*Actions → CI → Run workflow*) | same as a push to `main` |
 
-One-time setup for maintainers:
+**One-time checklist**
 
-1. **Make the package public**: the first push creates a *private* package. In GitHub: profile or organization → *Packages* → `webauthnproxy` →
-   *Package settings* → *Change visibility* → Public. Otherwise `docker pull` answers `denied`.
-2. **Optional Docker Hub mirror**: add the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (an access token with write
-   permission). The same tags are then also pushed to `docker.io/<username>/webauthnproxy`. Without these secrets, only GHCR is used.
-3. Nothing else to configure: the job requests `packages: write` itself and logs in to GHCR with the built-in `GITHUB_TOKEN` (the image's
-   `org.opencontainers.image.source` label links the package to this repository).
+1. **Merge the branch into `main`.** Workflows only exist on the branches that contain `.github/workflows/`; until then nothing runs.
+2. **Enable Actions**: repository *Settings → Actions → General* → allow actions. Nothing else to configure: the job requests
+   `packages: write` itself and logs in with the built-in `GITHUB_TOKEN`.
+3. **Check the first run**: *Actions → CI*. All three jobs must be green (`test`, `e2e`, `image`). If `e2e` fails on the runner, its logs show which scenario.
+4. **Make the package public**: the first push creates a *private* package. *Profile or organization → Packages → webauthnproxy →
+   Package settings → Change visibility → Public*. Until then `docker pull` answers `denied`.
+5. **Optional Docker Hub mirror**: add the secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (token with write access). The same tags are then also pushed
+   to `docker.io/<username>/webauthnproxy`. Without them, only GHCR is used.
 
-To release: update [CHANGELOG.md](CHANGELOG.md), then `git tag v1.0.0 && git push origin v1.0.0`.
+**Release**: update [CHANGELOG.md](CHANGELOG.md), then `git tag v1.0.0 && git push origin v1.0.0`.
 
 ## Translations
 
@@ -64,3 +69,4 @@ The `/` page of the forwardAuth login host is translated in `app.go` (`home`). K
 | `import.go` | validation and import of the static tool's JSON files |
 | `web/` | embedded pages (login, enrollment, standalone `tool.html`) |
 | `test/e2e/` | end-to-end tests (Playwright) |
+| `docs/` | detailed documentation (English only; `README.fr.md` is a short French mirror of the README) |

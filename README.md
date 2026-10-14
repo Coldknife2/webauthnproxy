@@ -15,6 +15,58 @@ Le site web ne doit **pas** être joignable autrement que par le proxy (pas de p
   (toute valeur envoyée par le client est écrasée). Le cookie de session n'est pas transmis à l'upstream.
 - Connexion « sans nom d'utilisateur » (passkey discoverable), vérification utilisateur (PIN/biométrie) exigée.
 
+## Pourquoi ce projet ?
+
+**Besoin** : mettre une authentification *passkey uniquement* devant un ou plusieurs sites auto-hébergés
+(derrière Traefik ou non), avec le strict minimum : un conteneur, un fichier JSON, pas d'annuaire,
+pas de mot de passe, pas de fournisseur OIDC à déployer, et un enrôlement qu'on peut éteindre.
+
+**Recherche préalable** (état au 14/10/2026, sources en bas de section) :
+
+- **Plugin Traefik** : aucun plugin WebAuthn/passkey trouvé dans le [catalogue](https://plugins.traefik.io)
+  ni sur la [communauté](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396), où
+  la demande est restée sans réponse native (piste proposée : passer par du ForwardAuth). Les plugins
+  d'authentification existants font du basic auth/mTLS ([trauth](https://github.com/leonjza/trauth)), du JWT, de l'OIDC ou du LDAP.
+  Les plugins tournent par ailleurs dans un interpréteur (Yaegi), sans stockage ni état de cérémonie : peu adapté au WebAuthn.
+- **[Pocket ID](https://github.com/pocket-id/pocket-id)** : fournisseur OIDC/OAuth 2.0 **uniquement par passkey**
+  (BSD-2). C'est un *fournisseur d'identité*, pas un proxy : les applications doivent parler OIDC. Son guide officiel
+  pour les apps sans OIDC renvoie vers un proxy d'authentification tiers (Tinyauth, caddy-security, OAuth2 Proxy ou
+  forward auth Traefik) ([guide](https://pocket-id.org/docs/guides/proxy-services), lu via un extrait de recherche).
+- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)** : middleware d'authentification pour Traefik, Nginx et Caddy
+  (AGPL-3.0) ; méthodes citées : OAuth/OIDC, LDAP, contrôle d'accès, TOTP. Le README ne mentionne **ni passkey ni WebAuthn** ;
+  une [discussion](https://github.com/tinyauthapp/tinyauth/discussions) demandant la connexion par passkey (fév. 2026) existe, sans réponse que j'aie pu confirmer.
+- **Authelia / Authentik** : solutions complètes (portail SSO, politiques, annuaires), plus lourdes à exploiter
+  (Authentik demande PostgreSQL ; non revérifié en détail ici).
+
+**Conclusion** : la combinaison *Pocket ID + Tinyauth (ou OAuth2 Proxy) + Traefik* offre déjà des passkeys en
+forwardAuth, avec de vrais avantages (SSO OIDC, interface d'administration, multi-utilisateurs, maintenance
+communautaire). Mais cela fait **trois composants** et passe par OIDC. webauthnproxy vise le cas plus petit :
+**un seul conteneur, sans OIDC, sans autre dépendance**, quelques centaines de lignes de Go à auditer.
+
+| Besoin | webauthnproxy | Pocket ID + Tinyauth | Authelia / Authentik |
+|---|---|---|---|
+| Passkey comme unique méthode | ✅ | ✅ (via Pocket ID) | ✅ (parmi d'autres) |
+| Composants à déployer | 1 | 2 (+ Traefik) | 1 à 3 |
+| Stockage | fichier JSON | base de données | base de données |
+| SSO OIDC pour d'autres applis | ❌ | ✅ | ✅ |
+| Politiques par site / groupes | ❌ | partiel (Tinyauth) | ✅ |
+| Fonctionne sans Traefik (proxy intégré) | ✅ | ❌ | ❌ |
+| Maturité / communauté | faible (nouveau) | élevée | élevée |
+
+**À choisir autrement si** : vous avez besoin de SSO pour plusieurs applications, de groupes/politiques par site,
+de comptes gérés par plusieurs administrateurs, ou d'un projet largement audité. Pocket ID + Tinyauth est alors la voie recommandée.
+
+*Limites de la recherche* : les sites officiels (tinyauth.app, docs.pocket-id.org) n'étaient pas joignables depuis
+l'environnement de travail ; les informations proviennent des dépôts GitHub et de pages tierces. À revérifier avant de
+trancher, ces projets évoluent vite.
+
+Sources : [Pocket ID](https://github.com/pocket-id/pocket-id) ·
+[guide proxy Pocket ID](https://pocket-id.org/docs/guides/proxy-services) ·
+[Tinyauth](https://github.com/tinyauthapp/tinyauth) ·
+[comparatif](https://sumguy.com/tinyauth-vs-pocket-id-vs-authelia/) ·
+[fil communauté Traefik](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396) ·
+[catalogue de plugins Traefik](https://plugins.traefik.io)
+
 ## Mode forwardAuth (Traefik) — `MODE=forward`
 
 Au lieu de faire transiter le trafic, le service ne fait que **vérifier** : Traefik appelle

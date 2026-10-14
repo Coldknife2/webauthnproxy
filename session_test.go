@@ -7,27 +7,27 @@ import (
 
 func TestSessionRoundTrip(t *testing.T) {
 	s := &Sessions{secret: []byte("0123456789abcdef"), ttl: time.Hour}
-	name, aud, err := s.Verify(s.New("remi", "app.example.com"))
-	if err != nil || name != "remi" || aud != "app.example.com" {
-		t.Fatalf("got %q %q, %v", name, aud, err)
+	name, aud, gen, err := s.Verify(s.New("remi", "app.example.com", 7))
+	if err != nil || name != "remi" || aud != "app.example.com" || gen != 7 {
+		t.Fatalf("got %q %q %d, %v", name, aud, gen, err)
 	}
-	if _, aud, _ := s.Verify(s.New("remi", "")); aud != "" {
+	if _, aud, _, _ := s.Verify(s.New("remi", "", 0)); aud != "" {
 		t.Fatalf("empty audience came back as %q", aud)
 	}
 }
 
 func TestSessionRejects(t *testing.T) {
 	s := &Sessions{secret: []byte("0123456789abcdef"), ttl: time.Hour}
-	tok := s.New("remi", "")
+	tok := s.New("remi", "", 0)
 	other := &Sessions{secret: []byte("fedcba9876543210"), ttl: time.Hour}
-	if _, _, err := other.Verify(tok); err == nil {
+	if _, _, _, err := other.Verify(tok); err == nil {
 		t.Error("signature from another secret accepted")
 	}
-	if _, _, err := s.Verify(tok + "x"); err == nil {
+	if _, _, _, err := s.Verify(tok + "x"); err == nil {
 		t.Error("tampered signature accepted")
 	}
 	expired := &Sessions{secret: s.secret, ttl: -time.Minute}
-	if _, _, err := s.Verify(expired.New("remi", "")); err == nil {
+	if _, _, _, err := s.Verify(expired.New("remi", "", 0)); err == nil {
 		t.Error("expired session accepted")
 	}
 }
@@ -45,20 +45,20 @@ func TestCeremonyOneShot(t *testing.T) {
 
 func TestTicket(t *testing.T) {
 	s := &Sessions{secret: []byte("0123456789abcdef"), ttl: time.Hour}
-	user, aud, nonce, _, err := s.VerifyTicket(s.NewTicket("remi", "app.example.com"))
-	if err != nil || user != "remi" || aud != "app.example.com" || nonce == "" {
-		t.Fatalf("got %q %q %q, %v", user, aud, nonce, err)
+	user, aud, gen, nonce, _, err := s.VerifyTicket(s.NewTicket("remi", "app.example.com", 3))
+	if err != nil || user != "remi" || aud != "app.example.com" || gen != 3 || nonce == "" {
+		t.Fatalf("got %q %q %d %q, %v", user, aud, gen, nonce, err)
 	}
 	// a session cookie is not a ticket, and a ticket is not a session cookie
-	if _, _, _, _, err := s.VerifyTicket(s.New("remi", "app.example.com")); err == nil {
+	if _, _, _, _, _, err := s.VerifyTicket(s.New("remi", "app.example.com", 0)); err == nil {
 		t.Error("session accepted as ticket")
 	}
-	if _, _, err := s.Verify(s.NewTicket("remi", "app.example.com")); err == nil {
+	if _, _, _, err := s.Verify(s.NewTicket("remi", "app.example.com", 0)); err == nil {
 		t.Error("ticket accepted as session")
 	}
 	// tickets are short-lived
-	old := s.token("t", "remi", "x", -time.Second, "n")
-	if _, _, _, _, err := s.VerifyTicket(old); err == nil {
+	old := s.token("t", "remi", "x", -time.Second, 0, "n")
+	if _, _, _, _, _, err := s.VerifyTicket(old); err == nil {
 		t.Error("expired ticket accepted")
 	}
 }

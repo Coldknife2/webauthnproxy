@@ -1,0 +1,18 @@
+[package]
+name = "verify"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

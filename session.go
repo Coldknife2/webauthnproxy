@@ -68,9 +68,11 @@ func (s *Sessions) mac(kind, payload string, dst []byte) []byte {
 	return dst
 }
 
-func (s *Sessions) token(kind, user, aud string, ttl time.Duration, extra ...string) string {
+// token layout: user.aud.exp.gen[.extra…] (user and aud are base64url, so they can never contain the "." separator).
+// gen is the user's session generation: bumping it on the server revokes every token issued before.
+func (s *Sessions) token(kind, user, aud string, ttl time.Duration, gen int64, extra ...string) string {
 	parts := append([]string{b64.EncodeToString([]byte(user)), b64.EncodeToString([]byte(aud)),
-		strconv.FormatInt(time.Now().Add(ttl).Unix(), 10)}, extra...)
+		strconv.FormatInt(time.Now().Add(ttl).Unix(), 10), strconv.FormatInt(gen, 10)}, extra...)
 	payload := strings.Join(parts, ".")
 	return payload + "." + s.sign(kind, payload)
 }
@@ -103,42 +105,50 @@ func decode(seg string) (string, error) {
 	return string(b), err
 }
 
-// New returns a session token for user, bound to audience aud.
-func (s *Sessions) New(user, aud string) string { return s.token("s", user, aud, s.ttl) }
+// New returns a session token for user, bound to audience aud and to the user's session generation.
+func (s *Sessions) New(user, aud string, gen int64) string {
+	return s.token("s", user, aud, s.ttl, gen)
+}
 
-// Verify returns the user name and audience if the session token is valid.
-func (s *Sessions) Verify(v string) (user, aud string, err error) {
-	p, _, err := s.parse("s", v, 3)
+// Verify returns the user name, audience and generation if the session token is valid.
+func (s *Sessions) Verify(v string) (user, aud string, gen int64, err error) {
+	p, _, err := s.parse("s", v, 4)
 	if err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
 	if user, err = decode(p[0]); err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
-	aud, err = decode(p[1])
-	return user, aud, err
+	if aud, err = decode(p[1]); err != nil {
+		return "", "", 0, err
+	}
+	gen, err = strconv.ParseInt(p[3], 10, 64)
+	return user, aud, gen, err
 }
 
 // NewTicket returns a short-lived, single-use ticket granting a session on host aud.
-func (s *Sessions) NewTicket(user, aud string) string {
+func (s *Sessions) NewTicket(user, aud string, gen int64) string {
 	n := make([]byte, 16)
 	_, _ = rand.Read(n)
-	return s.token("t", user, aud, ticketTTL, b64.EncodeToString(n))
+	return s.token("t", user, aud, ticketTTL, gen, b64.EncodeToString(n))
 }
 
-// VerifyTicket returns the ticket's user, audience, nonce and expiry if it is valid.
-func (s *Sessions) VerifyTicket(v string) (user, aud, nonce string, exp time.Time, err error) {
-	p, exp, err := s.parse("t", v, 4)
+// VerifyTicket returns the ticket's user, audience, generation, nonce and expiry if it is valid.
+func (s *Sessions) VerifyTicket(v string) (user, aud string, gen int64, nonce string, exp time.Time, err error) {
+	p, exp, err := s.parse("t", v, 5)
 	if err != nil {
-		return "", "", "", time.Time{}, err
+		return "", "", 0, "", time.Time{}, err
 	}
 	if user, err = decode(p[0]); err != nil {
-		return "", "", "", time.Time{}, err
+		return "", "", 0, "", time.Time{}, err
 	}
 	if aud, err = decode(p[1]); err != nil {
-		return "", "", "", time.Time{}, err
+		return "", "", 0, "", time.Time{}, err
 	}
-	return user, aud, p[3], exp, nil
+	if gen, err = strconv.ParseInt(p[3], 10, 64); err != nil {
+		return "", "", 0, "", time.Time{}, err
+	}
+	return user, aud, gen, p[4], exp, nil
 }
 
 // Seen remembers single-use values (ticket nonces) until they expire.

@@ -154,8 +154,8 @@ func LoadConfig() (*Config, error) {
 	c.SessionTTL = ttl
 
 	if s := os.Getenv("SESSION_SECRET"); s != "" {
-		if len(s) < 16 {
-			return nil, fmt.Errorf("SESSION_SECRET too short (16 characters minimum)")
+		if len(s) < 32 {
+			return nil, fmt.Errorf("SESSION_SECRET too short (32 characters minimum, e.g. openssl rand -base64 48)")
 		}
 		c.SessionSecret = []byte(s)
 	}

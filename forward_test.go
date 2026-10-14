@@ -86,7 +86,7 @@ func TestForwardCrossDomainFlow(t *testing.T) {
 	}
 
 	// 3. signed in on the login host: sso hands the user over with a ticket for that host only
-	loginCookie := a.sessions.New("remi", "")
+	loginCookie := a.sessions.New("remi", "", 0)
 	r := httptest.NewRequest("GET", "/_wap/sso?next="+url.QueryEscape("https://anysite.com/page?x=1"), nil)
 	r.Header.Set("Cookie", cookieName+"="+loginCookie)
 	sw := httptest.NewRecorder()
@@ -155,7 +155,7 @@ func TestForwardNonBrowserGets401AndDeletedUserLosesAccess(t *testing.T) {
 	if w.Code != 401 {
 		t.Fatalf("non-browser anonymous: %d", w.Code)
 	}
-	site := a.sessions.New("remi", "anysite.com")
+	site := a.sessions.New("remi", "anysite.com", 0)
 	if w := verifyReq(a, "anysite.com", "/", site); w.Code != 200 {
 		t.Fatalf("valid: %d", w.Code)
 	}
@@ -171,7 +171,7 @@ func TestSharedCookieDomainStillWorks(t *testing.T) {
 	a := forwardApp(t)
 	a.cfg.CookieDomain = "example.com"
 	addUser(t, a)
-	shared := a.sessions.New("remi", "")
+	shared := a.sessions.New("remi", "", 0)
 	if w := verifyReq(a, "app.example.com", "/", shared); w.Code != 200 {
 		t.Fatalf("shared cookie inside the cookie domain: %d", w.Code)
 	}

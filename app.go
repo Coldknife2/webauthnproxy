@@ -127,7 +127,14 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 			case prefix + "/callback": // the login host sent the user back with a ticket
 				a.callback(w, r, host, p.Query())
 				return
-			case prefix + "/logout": // sign out of this site
+			case prefix + "/logout": // POST: sign out everywhere; any other method: only forget this site's cookie
+				if r.Header.Get("X-Forwarded-Method") == http.MethodPost {
+					if name, aud, ok := a.session(r); ok && (aud == host || (aud == "" && a.cfg.InCookieDomain(host))) {
+						if err := a.store.Revoke(name); err != nil {
+							log.Printf("sign-out: cannot persist revocation: %v", err)
+						}
+					}
+				}
 				http.SetCookie(w, a.hostCookie(r, "", -1))
 				http.SetCookie(w, a.cookie(r, "", -1))
 				http.Redirect(w, r, a.cfg.LoginURL.String(), http.StatusFound)
@@ -152,8 +159,13 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 
 // callback exchanges a ticket for a host-only session cookie, then sends the user to the page they asked for.
 func (a *App) callback(w http.ResponseWriter, r *http.Request, host string, q url.Values) {
-	user, aud, nonce, exp, err := a.sessions.VerifyTicket(q.Get("ticket"))
-	if err != nil || aud != host || !a.store.Exists(user) || !a.seen.Mark(nonce, exp) {
+	user, aud, gen, nonce, exp, err := a.sessions.VerifyTicket(q.Get("ticket"))
+	if err != nil || aud != host {
+		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
+		return
+	}
+	// a ticket issued before a sign-out ("revocation") must not open a new session
+	if cur, ok := a.store.Gen(user); !ok || cur != gen || !a.seen.Mark(nonce, exp) {
 		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
 		return
 	}
@@ -165,7 +177,7 @@ func (a *App) callback(w http.ResponseWriter, r *http.Request, host string, q ur
 	if isSecure(r) {
 		proto = "https"
 	}
-	http.SetCookie(w, a.hostCookie(r, a.sessions.New(user, host), int(a.cfg.SessionTTL.Seconds())))
+	http.SetCookie(w, a.hostCookie(r, a.sessions.New(user, host, gen), int(a.cfg.SessionTTL.Seconds())))
 	// Absolute URL: Traefik resolves a relative Location against the auth service's own address.
 	http.Redirect(w, r, proto+"://"+host+next, http.StatusFound)
 }
@@ -188,7 +200,8 @@ func (a *App) sso(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
-	cb := u.Scheme + "://" + u.Host + prefix + "/callback?ticket=" + url.QueryEscape(a.sessions.NewTicket(name, strings.ToLower(u.Host))) +
+	gen, _ := a.store.Gen(name)
+	cb := u.Scheme + "://" + u.Host + prefix + "/callback?ticket=" + url.QueryEscape(a.sessions.NewTicket(name, strings.ToLower(u.Host), gen)) +
 		"&next=" + url.QueryEscape(u.RequestURI())
 	http.Redirect(w, r, cb, http.StatusFound)
 }
@@ -243,8 +256,12 @@ func (a *App) session(r *http.Request) (name, aud string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
-	name, aud, err = a.sessions.Verify(c.Value)
-	if err != nil || !a.store.Exists(name) { // deleted user => invalid session
+	name, aud, gen, err := a.sessions.Verify(c.Value)
+	if err != nil {
+		return "", "", false
+	}
+	// deleted user, or a sign-out since the token was issued => invalid session
+	if cur, ok := a.store.Gen(name); !ok || cur != gen {
 		return "", "", false
 	}
 	return name, aud, true
@@ -332,7 +349,8 @@ func (a *App) loginFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	u := user.(*User)
 	_ = a.store.UpdateCredential(u.ID, cred)
-	http.SetCookie(w, a.cookie(r, a.sessions.New(u.Name, ""), int(a.cfg.SessionTTL.Seconds())))
+	gen, _ := a.store.Gen(u.Name)
+	http.SetCookie(w, a.cookie(r, a.sessions.New(u.Name, "", gen), int(a.cfg.SessionTTL.Seconds())))
 	writeJSON(w, 200, map[string]string{"next": a.loginTarget(r.URL.Query().Get("next"))})
 }
 
@@ -402,7 +420,14 @@ func (a *App) enrollGuard(next http.Handler) http.Handler {
 	})
 }
 
+// logout signs the user out everywhere: the cookie is cleared and every session and ticket issued so far
+// (other devices, other protected sites, a copied cookie) is revoked.
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
+	if name, ok := a.currentUser(r); ok {
+		if err := a.store.Revoke(name); err != nil {
+			log.Printf("sign-out: cannot persist revocation: %v", err)
+		}
+	}
 	http.SetCookie(w, a.cookie(r, "", -1))
 	http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
 }

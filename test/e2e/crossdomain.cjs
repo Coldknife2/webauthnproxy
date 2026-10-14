@@ -88,6 +88,14 @@ const raw = (host, urlPath, headers = {}) => new Promise((res, rej) => http.get(
     assert.equal(await page.textContent("body").then((t) => t.trim()), "host not allowed");
     step("a host that is not in ALLOWED_HOSTS is refused (403)");
 
+    // sign out everywhere: a copied site cookie stops working at once
+    const copied = { Accept: "application/json", Cookie: `wap_session=${one.value}` };
+    assert.equal((await raw("a.siteone.test:8000", "/", copied)).status, 200);
+    await page.goto("http://auth.test.local:8000/");   // login host home page, with its sign-out form (POST)
+    await Promise.all([page.waitForURL(/\/_wap\/login/), page.click("button")]);
+    assert.equal((await raw("a.siteone.test:8000", "/", copied)).status, 401);
+    step("signing out on the login host revokes the cookies already issued to sites");
+
     await page.goto("http://a.siteone.test:8000/_wap/logout");
     assert.ok(!(await ctx.cookies("http://a.siteone.test:8000")).some((c) => c.name === "wap_session" && c.value));
     step("site logout clears that site's cookie");

@@ -60,7 +60,7 @@ func addUser(t testing.TB, a *App) string {
 	if err := a.store.AddCredential(u, &webauthn.Credential{ID: []byte("c1")}); err != nil {
 		t.Fatal(err)
 	}
-	return a.sessions.New("remi", "")
+	return a.sessions.New("remi", "", 0)
 }
 
 func TestEnrollRequiresSessionOnceUsersExist(t *testing.T) {

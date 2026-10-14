@@ -4,10 +4,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ## [Unreleased]
 
+### Security
+- Signing out now **revokes** every session and ticket of the user (per-user session generation stored in `users.json`), on all sites and devices; on a protected site only `POST /_wap/logout` revokes, `GET` just clears that site's cookie.
+- `SESSION_SECRET` must now be at least 32 characters (was 16).
+- Session token layout gained a generation field (`user.aud.exp.gen.signature`); existing cookies are refused and users sign in again.
+
 ### Changed
 - Hot path (`/_wap/verify`) optimized: pooled HMAC, no user copy per request, no URL parsing for ordinary requests (~30 % faster, 25 → 17 allocations).
 
 ### Added
+- Footprint comparison with Pocket ID + Tinyauth alongside Authelia (`make bench`), and a language comparison of the hot path in Go, Rust, .NET, Node and Python (`make bench-langs`); see `docs/performance.md` and `docs/language-choice.md`.
 - Footprint benchmark against Authelia (`make bench`) and Go micro-benchmarks (`make bench-go`); results in `docs/performance.md`.
 - Documentation split: short README (quick start first), details in `docs/`; comparison with Pocket ID + Tinyauth and Authelia; manual run of the CI on `main` to publish images.
 - forwardAuth across **unrelated domains**: `auth.com` can protect `anysite.com` and other sites through a shortlist (`ALLOWED_HOSTS`: `host`, `host:port`, `*.domain`), using single-use 60-second tickets and per-host cookies bound to their site; `/_wap/sso`, `/_wap/callback` and `/_wap/logout` endpoints. `COOKIE_DOMAIN` becomes optional (shared-cookie shortcut).

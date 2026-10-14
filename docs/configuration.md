@@ -20,7 +20,7 @@ Everything is set through environment variables.
 | `TOOL_ENABLED` | `false` | Enable the static enrollment tool |
 | `TOOL_LISTEN` | `:8082` | Static tool port |
 | `DATA_DIR` | `/data` | `users.json`, `session.key`, `import/` folder (mount as a volume) |
-| `SESSION_SECRET` | generated | Cookie-signing secret (≥ 16 characters); otherwise generated in `DATA_DIR/session.key` |
+| `SESSION_SECRET` | generated | Cookie-signing secret, **32 characters minimum** (`openssl rand -base64 48`); otherwise 32 random bytes are generated in `DATA_DIR/session.key`. Changing it signs everybody out |
 | `SESSION_TTL` | `12h` | Session lifetime |
 | `USER_VERIFICATION` | `required` | `preferred` to accept authenticators without PIN/biometrics |
 | `PRESERVE_HOST` | `false` | Proxy mode: forward the client's `Host` to the upstream |

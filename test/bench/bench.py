@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Footprint benchmark: webauthnproxy vs Authelia, same machine, same load generator.
+"""Footprint benchmark: webauthnproxy vs Authelia vs Pocket ID + Tinyauth, same machine, same load generator.
 
 Measures, for each service running in a container (forwardAuth mode, authenticated check on every request):
   startup time, idle memory (RSS) and CPU, memory/CPU/throughput under load, image size.
+Pocket ID + Tinyauth are two containers: Pocket ID (the passkey identity provider) is only involved at login, so the
+authenticated checks hit Tinyauth; idle memory/CPU and image size are the sum of both.
 
+Needs the Python package bcrypt (pip install bcrypt) to create the Tinyauth user.
 Linux only (reads /proc of the container's process). Needs podman or docker, Go, and the images:
   make image RUNTIME=podman            # builds the local "webauthnproxy" image
-  python3 test/bench/bench.py          # takes ~3 minutes
+  python3 test/bench/bench.py          # takes ~6 minutes
 
 Environment: WAP_IMAGE (default webauthnproxy), AUTHELIA_IMAGE (default docker.io/authelia/authelia:latest),
+POCKETID_IMAGE (default docker.io/pocketid/pocket-id:v2), TINYAUTH_IMAGE (default ghcr.io/tinyauthapp/tinyauth:v5),
 BENCH_SETTLE (seconds to wait before the idle measurement, default 45), BENCH_DURATION (default 10).
 """
 import base64, hashlib, hmac, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
@@ -16,16 +20,21 @@ import base64, hashlib, hmac, json, os, re, shutil, subprocess, sys, tempfile, t
 RT = os.environ.get("RUNTIME") or ("podman" if shutil.which("podman") else "docker")
 WAP = os.environ.get("WAP_IMAGE", "webauthnproxy")
 AUTHELIA = os.environ.get("AUTHELIA_IMAGE", "docker.io/authelia/authelia:latest")
+POCKETID = os.environ.get("POCKETID_IMAGE", "docker.io/pocketid/pocket-id:v2")
+TINYAUTH = os.environ.get("TINYAUTH_IMAGE", "ghcr.io/tinyauthapp/tinyauth:v5")
 SETTLE = int(os.environ.get("BENCH_SETTLE", "45"))
 DUR = os.environ.get("BENCH_DURATION", "10") + "s"
 HERE = os.path.dirname(os.path.abspath(__file__))
 TMP = tempfile.mkdtemp(prefix="wap-bench-")
-SECRET = "bench-secret-0123456789abcdef"
+SECRET = "bench-secret-0123456789abcdef0123456789"
 TICK = os.sysconf("SC_CLK_TCK")
 
 
 def sh(*a, check=True):
-    return subprocess.run(a, check=check, capture_output=True, text=True).stdout.strip()
+    p = subprocess.run(a, capture_output=True, text=True)
+    if check and p.returncode:
+        raise SystemExit(f"command failed ({p.returncode}): {' '.join(a)}\n{p.stderr.strip()}")
+    return p.stdout.strip()
 
 
 def b64(x):
@@ -33,7 +42,7 @@ def b64(x):
 
 
 def wap_cookie(user, aud):
-    p = ".".join([b64(user.encode()), b64(aud.encode()), str(int(time.time()) + 86400)])
+    p = ".".join([b64(user.encode()), b64(aud.encode()), str(int(time.time()) + 86400), "0"])  # user.aud.exp.gen
     return p + "." + b64(hmac.new(SECRET.encode(), ("s|" + p).encode(), hashlib.sha256).digest())
 
 
@@ -78,19 +87,23 @@ def load(url, headers, c):
     return dict(requests=int(m.group(1)), rps=int(m.group(3)), p99=m.group(5))
 
 
-def measure(name, pid, url, headers, extra=None):
+def measure(name, pid, url, headers, extra=None, companions=()):
+    """Idle figures cover pid plus companion pids; the load test hits url served by pid."""
     r = {"startup_s": extra}
     time.sleep(SETTLE)
+    allp = [pid, *companions]
     m = mem(pid)
-    r["idle_rss_mib"], r["idle_anon_mib"] = m["VmRSS"], m["RssAnon"]
-    c0 = cpu_s(pid)
+    r["idle_rss_mib"] = sum(mem(p)["VmRSS"] for p in allp)
+    r["idle_anon_mib"] = sum(mem(p)["RssAnon"] for p in allp)
+    c0 = sum(cpu_s(p) for p in allp)
     time.sleep(20)
-    r["idle_cpu_pct"] = (cpu_s(pid) - c0) / 20 * 100
+    r["idle_cpu_pct"] = (sum(cpu_s(p) for p in allp) - c0) / 20 * 100
     for c in (4, 32):
         c0 = cpu_s(pid)
         res = load(url, headers, c)
         res["cpu_ms_per_1k"] = (cpu_s(pid) - c0) * 1000 / (res["requests"] / 1000)
-        res["rss_mib"], res["peak_mib"] = mem(pid)["VmRSS"], mem(pid)["VmHWM"]
+        res["rss_mib"] = sum(mem(p)["VmRSS"] for p in allp)
+        res["peak_mib"] = mem(pid)["VmHWM"] + sum(mem(p)["VmHWM"] for p in companions)
         r[f"c{c}"] = res
     return r
 
@@ -157,24 +170,56 @@ notifier: {filesystem: {filename: /config/notification.txt}}
         results["authelia"] = measure("authelia", pid, "http://127.0.0.1:19091/api/authz/forward-auth", hdr, up)
         results["authelia"]["image_mib"] = image_mib(AUTHELIA)
         results["authelia"]["peak_after_login_mib"] = login_peak
+        sh(RT, "rm", "-f", "authelia-bench")
+
+        # ---- Pocket ID (passkey OIDC provider) + Tinyauth (forward-auth, local user)
+        pdata = os.path.join(TMP, "pocketid"); os.makedirs(pdata); os.chown(pdata, 1000, 1000)
+        tdata = os.path.join(TMP, "tinyauth")
+        for d in ("resources", "oidc", "tailscale"):
+            os.makedirs(os.path.join(tdata, d))
+        subprocess.run(["chmod", "-R", "a+rwX", tdata], check=True)
+        t0 = time.time()
+        sh(RT, "run", "-d", "--name", "pocketid-bench", "-p", "11411:1411", "-v", f"{pdata}:/app/data",
+           "-e", "APP_URL=http://localhost:11411", "-e", "ENCRYPTION_KEY=bench-encryption-key-0123456789",
+           "-e", "ANALYTICS_DISABLED=true", POCKETID)
+        wait_http("http://127.0.0.1:11411/"); pocket_up = time.time() - t0
+        import bcrypt
+        pw_hash = bcrypt.hashpw(b"benchpass123", bcrypt.gensalt(10)).decode()
+        t0 = time.time()
+        sh(RT, "run", "-d", "--name", "tinyauth-bench", "--user", "0", "-p", "13000:3000", "-v", f"{tdata}:/data",
+           "-e", "TINYAUTH_APPURL=http://auth.example.com", "-e", f"TINYAUTH_AUTH_USERS=bench:{pw_hash}",
+           "-e", "TINYAUTH_LOG_LEVEL=warn", "-e", "TINYAUTH_LOG_STREAMS_HTTP_ENABLED=false", TINYAUTH)  # quietest settings, like the others
+        wait_http("http://127.0.0.1:13000/"); tiny_up = time.time() - t0
+        req = urllib.request.Request("http://127.0.0.1:13000/api/user/login", method="POST",
+            data=json.dumps({"username": "bench", "password": "benchpass123"}).encode(), headers={"Content-Type": "application/json"})
+        pair = re.search(r"(tinyauth-session[^=]*=[^;]+)", urllib.request.urlopen(req).headers["Set-Cookie"]).group(1)
+        hdr = ["X-Forwarded-Host: app.example.com", "X-Forwarded-Uri: /", "X-Forwarded-Proto: http", "Cookie: " + pair]
+        r = measure("tinyauth", pid_of("tinyauth-bench"), "http://127.0.0.1:13000/api/auth/traefik", hdr, tiny_up,
+                    companions=[pid_of("pocketid-bench")])
+        r["startup_pocketid_s"] = pocket_up
+        r["image_mib"] = image_mib(POCKETID) + image_mib(TINYAUTH)
+        r["parts"] = {"pocketid_mib": mem(pid_of("pocketid-bench"))["VmRSS"], "tinyauth_mib": mem(pid_of("tinyauth-bench"))["VmRSS"],
+                      "pocketid_image_mib": image_mib(POCKETID), "tinyauth_image_mib": image_mib(TINYAUTH)}
+        results["pocketid+tinyauth"] = r
     finally:
         for n in names:
             sh(RT, "rm", "-f", n, check=False)
     print(json.dumps(results, indent=2))
-    w, a = results["webauthnproxy"], results["authelia"]
-    row = lambda label, f: print(f"| {label} | {f(w)} | {f(a)} |")
-    print("\n| | webauthnproxy | Authelia |\n|---|---|---|")
+    cols = [("webauthnproxy", "webauthnproxy"), ("authelia", "Authelia"), ("pocketid+tinyauth", "Pocket ID + Tinyauth")]
+    print("\n| | " + " | ".join(n for _, n in cols) + " |\n|---|" + "---|" * len(cols))
+    row = lambda label, f: print(f"| {label} | " + " | ".join(f(results[k]) for k, _ in cols) + " |")
     row("Image size", lambda r: f"{r['image_mib']:.0f} MiB")
     row("Start to first answer (container create included)", lambda r: f"{r['startup_s']:.2f} s")
     row("Idle memory (RSS, anonymous)", lambda r: f"{r['idle_rss_mib']:.0f} MiB ({r['idle_anon_mib']:.0f})")
     row("Idle CPU", lambda r: f"{r['idle_cpu_pct']:.2f} %")
     for c in (4, 32):
         row(f"Auth check, {c} connections", lambda r: f"{r[f'c{c}']['rps']:,} req/s, p99 {r[f'c{c}']['p99']}")
-        row(f"  server CPU per 1000 requests", lambda r: f"{r[f'c{c}']['cpu_ms_per_1k']:.0f} ms")
-    row("Peak memory under load", lambda r: f"{max(r['c4']['peak_mib'], r['c32']['peak_mib']):.0f} MiB")
+        row("  server CPU per 1000 requests", lambda r: f"{r[f'c{c}']['cpu_ms_per_1k']:.0f} ms")
+    row("Peak memory during the run", lambda r: f"{max(r['c4']['peak_mib'], r['c32']['peak_mib']):.0f} MiB")
 
 
-try:
-    main()
-finally:
-    shutil.rmtree(TMP, ignore_errors=True)
+if __name__ == "__main__":
+    try:
+        main()
+    finally:
+        shutil.rmtree(TMP, ignore_errors=True)

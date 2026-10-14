@@ -47,6 +47,8 @@ Security properties of the exchange:
 - Tickets are HMAC-signed, expire after 60 s, are accepted **once**, and only for the host they were issued for.
 - A site's cookie is **bound to its host**: if one protected site's backend leaks the cookie it receives (Traefik forwards cookies), it is useless on any other site.
 - Users deleted from the database lose access on the very next request, on every site.
-- `https://anysite.com/_wap/logout` signs out of that site (clears its cookie). Signing out of the login host does **not** revoke cookies already issued to sites;
-  they remain valid until `SESSION_TTL` expires, so choose it accordingly. The `/_wap/` prefix is reserved on protected sites too.
+- **Sign-out revokes everything.** Signing out on the login host (the *Sign out* button of `https://auth.com/`) or sending
+  `POST https://anysite.com/_wap/logout` bumps the user's session generation: every cookie and ticket issued before, on any site or device, stops working immediately,
+  even if someone copied it. A `GET` on `/_wap/logout` only clears the cookie of that site (a link on a hostile page cannot sign you out everywhere).
+  Revocation is per user, not per session. The `/_wap/` prefix is reserved on protected sites too.
 - `/_wap/verify` must only be reachable by Traefik (internal network). There are no per-site rules: any enrolled passkey grants access to **all** listed sites.

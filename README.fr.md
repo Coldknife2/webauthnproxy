@@ -38,15 +38,15 @@ Podman : remplacez `docker` par `podman` ; rootless : `podman unshare chown 6553
 
 ## Léger
 
-| | webauthnproxy | Authelia |
-|---|---|---|
-| Mémoire au repos | **9 Mio** | 159 Mio |
-| CPU au repos | **0 %** | 0,05 % |
-| Image | **12 Mio** | 77 Mio |
-| Vérifications (32 connexions) | **32k req/s** | 19k req/s |
-| Mémoire max sous charge | **16 Mio** | 242 Mio |
+| | webauthnproxy | Authelia | Pocket ID + Tinyauth |
+|---|---|---|---|
+| Mémoire au repos | **9 Mio** | 161 Mio | 109 Mio |
+| CPU au repos | **0 %** | 0,05 % | 0,10 % |
+| Image | **12 Mio** | 77 Mio | 190 Mio |
+| Vérifications, 32 connexions | **36k req/s** | 20k req/s | 4,3k req/s |
+| Mémoire max sous charge | **16 Mio** | 258 Mio | 119 Mio |
 
-Même machine, même charge, vérification forward-auth authentifiée. Méthode, limites, reproduction : [docs/performance.md](docs/performance.md) (en anglais).
+Même machine, même charge, vérification forward-auth authentifiée. Ils font plus que nous (section suivante). Méthode et limites : [docs/performance.md](docs/performance.md) (en anglais).
 
 ## Installation
 
@@ -116,6 +116,7 @@ L'outil statique doit être servi en HTTPS sous le domaine `RP_ID` (pas en `file
 | `UPSTREAM` | – | mode proxy : site à protéger |
 | `RP_ID`, `RP_ORIGINS` | – | domaine WebAuthn et origines autorisées (obligatoires) |
 | `LOGIN_URL`, `ALLOWED_HOSTS` | – | mode forward : page de login, liste blanche des sites |
+| `SESSION_SECRET` | généré | clé de signature des cookies, 32 caractères minimum |
 | `SESSION_TTL` | `12h` | durée de session |
 | `DATA_DIR` | `/data` | `users.json`, `session.key`, `import/` |
 
@@ -123,28 +124,33 @@ Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/conf
 
 ## Pourquoi
 
-Besoin : connexion par passkey seule devant des sites auto-hébergés, sans rien d'autre à faire tourner. Au 14/10/2026 :
+**Pocket ID, Tinyauth et Authelia sont de bons projets, et ils font un autre métier.** Ce sont des plateformes d'identité et de SSO :
+utilisateurs et groupes, OIDC pour vos applis, règles d'accès par site, interfaces d'administration, matures et très utilisées.
+webauthnproxy est un portail. Il répond à une seule question, *« ce visiteur possède-t-il une passkey enregistrée ? »*, pour un ou plusieurs sites.
+Si vous avez besoin du premier, utilisez-les. Si vous n'avez besoin que du second, inutile de faire tourner deux ou trois services et une base de données.
+
+Ce que disent les sources (code et README lus le 14/10/2026) :
 
 - **Traefik** n'a [aucun plugin passkey](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396).
-- **[Pocket ID](https://github.com/pocket-id/pocket-id)** : passkey seule, mais fournisseur OIDC et non proxy : il faut [Tinyauth](https://github.com/tinyauthapp/tinyauth) ou OAuth2 Proxy devant les applis sans OIDC ([guide](https://pocket-id.org/docs/guides/proxy-services)). Le README de Tinyauth n'indique aucun support des passkeys.
-- **[Authelia](https://www.authelia.com/overview/authentication/security-key/)** : connexion par passkey depuis la v4.39, mais une passkey compte pour un seul facteur et un mot de passe peut rester demandé pour les politiques `two_factor`.
+- **[Pocket ID](https://github.com/pocket-id/pocket-id)** : fournisseur OIDC qui n'accepte que les passkeys. Il n'expose pas de point forward-auth :
+  pour protéger une appli sans OIDC, on met un proxy devant, comme [Tinyauth](https://github.com/tinyauthapp/tinyauth) ou OAuth2 Proxy ([son guide](https://pocket-id.org/docs/guides/proxy-services)).
+- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)** : forward-auth avec utilisateurs locaux, LDAP et OAuth/OIDC. Son code ne gère ni passkey ni WebAuthn.
+  Il pose un seul domaine de cookie, dérivé de sa propre URL, et refuse les applis hors de ce domaine (`domain does not match cookie domain`).
+- **[Authelia](https://www.authelia.com/overview/authentication/security-key/)** : connexion par passkey depuis la v4.39, mais une passkey compte pour un seul facteur et un mot de passe peut rester demandé
+  pour les politiques `two_factor`. Chaque domaine de cookie exige son propre `authelia_url` dans ce domaine : des domaines sans rapport donnent des portails et des connexions séparés.
 
 | | webauthnproxy | Pocket ID + Tinyauth | Authelia |
 |---|---|---|---|
-| Connexion passkey seule | ✅ | ✅ | ⚠️ mot de passe parfois exigé |
+| Connexion passkey seule | ✅ | ✅ (Pocket ID) | ⚠️ mot de passe parfois exigé |
 | Conteneurs à faire tourner | 1 | 2 (+ Traefik) | 1 (+ stockage) |
-| Un login passkey pour des **domaines sans rapport** | ✅ échange de ticket | non vérifié | [un cookie par domaine](https://authelia.com/configuration/session/introduction) ; connexions séparées* |
+| Un login pour des **domaines sans rapport** | ✅ échange de ticket | ❌ un seul domaine de cookie | un portail et une connexion par domaine |
 | Proxy intégré (ni Traefik, Caddy, Nginx) | ✅ | ❌ | ❌ |
 | SSO OIDC pour d'autres applis | ❌ | ✅ | ✅ |
-| Règles par site, groupes | ❌ | partiel | ✅ |
-| Mémoire au repos | **9 Mio** | non mesurée | 159 Mio |
+| Règles par site, groupes, plusieurs admins | ❌ | partiel | ✅ |
 | Maturité | nouveau, non audité | élevée | élevée |
 
-\*selon un témoignage tiers, non confirmé dans la doc d'Authelia.
-
-**Choisissez les autres** pour des règles par site, des groupes, plusieurs admins, de l'OIDC ou un logiciel audité.
-**Choisissez celui-ci** pour un usage perso ou homelab : une passkey, plusieurs sites, rien d'autre.
-Les sites officiels (tinyauth.app, docs.pocket-id.org) étaient injoignables lors de la recherche ; revérifiez avant de trancher.
+**Choisissez-les** pour de l'OIDC, des groupes, des règles par site, plusieurs administrateurs, ou un logiciel très utilisé et audité.
+**Choisissez celui-ci** pour un usage perso ou homelab : une passkey, plusieurs sites, rien d'autre à faire tourner.
 
 ## Développement
 
@@ -155,6 +161,8 @@ make build   # ./webauthnproxy
 make image   # image de conteneur
 make bench   # empreinte mémoire/CPU vs Authelia
 ```
+
+Pourquoi Go plutôt que Rust, .NET, Node ou Python : [docs/language-choice.md](docs/language-choice.md) (en anglais).
 
 La CI ([`ci.yml`](.github/workflows/ci.yml)) teste, puis construit et pousse l'image sur `ghcr.io` pour `main` et les tags `v*`.
 Mise en place et publication : [CONTRIBUTING.md](CONTRIBUTING.md#set-up-ci-and-publish-images). Vulnérabilités : [SECURITY.md](SECURITY.md).

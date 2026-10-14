@@ -15,6 +15,7 @@ import (
 type User struct {
 	ID          []byte                `json:"id"`
 	Name        string                `json:"name"`
+	Gen         int64                 `json:"gen,omitempty"` // session generation: bumped to revoke all sessions
 	Credentials []webauthn.Credential `json:"credentials"`
 }
 
@@ -94,16 +95,29 @@ func (s *Store) ByName(name string) *User {
 	return nil
 }
 
-// Exists reports whether a user with this name exists, without copying it (hot path).
-func (s *Store) Exists(name string) bool {
+// Gen returns the user's session generation and whether the user exists, without copying it (hot path).
+func (s *Store) Gen(name string) (int64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, u := range s.Users {
 		if u.Name == name {
-			return true
+			return u.Gen, true
 		}
 	}
-	return false
+	return 0, false
+}
+
+// Revoke invalidates every session and ticket issued so far for the user ("sign out everywhere").
+func (s *Store) Revoke(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, u := range s.Users {
+		if u.Name == name {
+			u.Gen++
+			return s.save()
+		}
+	}
+	return nil
 }
 
 func (s *Store) ByID(id []byte) *User {

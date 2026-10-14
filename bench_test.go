@@ -24,7 +24,7 @@ func BenchmarkVerify(b *testing.B) {
 	r := httptest.NewRequest("GET", "/_wap/verify", nil)
 	r.Header.Set("X-Forwarded-Host", "anysite.com")
 	r.Header.Set("X-Forwarded-Uri", "/page?x=1")
-	r.Header.Set("Cookie", cookieName+"="+a.sessions.New("remi", "anysite.com"))
+	r.Header.Set("Cookie", cookieName+"="+a.sessions.New("remi", "anysite.com", 0))
 	w := &nullWriter{h: http.Header{}}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -41,11 +41,11 @@ func BenchmarkVerify(b *testing.B) {
 func BenchmarkSessionVerify(b *testing.B) {
 	a := testApp(b)
 	addUser(b, a)
-	tok := a.sessions.New("remi", "")
+	tok := a.sessions.New("remi", "", 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, _, err := a.sessions.Verify(tok); err != nil {
+		if _, _, _, err := a.sessions.Verify(tok); err != nil {
 			b.Fatal(err)
 		}
 	}

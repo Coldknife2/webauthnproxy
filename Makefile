@@ -2,7 +2,7 @@ BIN      := webauthnproxy
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 RUNTIME  ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
-.PHONY: build test vet fmt check e2e bench bench-go image clean help
+.PHONY: build test vet fmt check e2e bench bench-go bench-langs image clean help
 
 help: ## List targets
 	@grep -E '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-8s %s\n", $$1, $$2}'
@@ -29,6 +29,10 @@ bench: ## Footprint benchmark vs Authelia (needs the local image; ~3 min)
 
 bench-go: ## Go micro-benchmarks of the hot path
 	go test -run xxx -bench . -benchmem
+
+bench-langs: ## Hot path in Go/Rust/.NET/Node/Python (builds 5 prototype images; ~8 min)
+	for d in go rust dotnet node python; do $(RUNTIME) build -t lang-$$d test/bench/langs/$$d || exit 1; done
+	RUNTIME=$(RUNTIME) python3 test/bench/langs.py
 
 image: ## Build the container image
 	$(RUNTIME) build --build-arg VERSION=$(VERSION) -t $(BIN) .

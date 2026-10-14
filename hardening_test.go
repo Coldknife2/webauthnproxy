@@ -97,8 +97,9 @@ func TestKeyRotationKeepsSessionsAlive(t *testing.T) {
 	if u, aud, gen, err := during.Verify(cookie); err != nil || u != "remi" || aud != "anysite.com" || gen != 3 {
 		t.Fatalf("a session signed with the previous key was refused during rotation: %v", err)
 	}
-	if _, _, _, _, _, err := during.VerifyTicket(ticket); err != nil {
-		t.Fatalf("a ticket signed with the previous key was refused during rotation: %v", err)
+	// rotation means a restart, and tickets do not survive a restart (single use is kept in memory); sessions do
+	if _, _, _, _, _, err := during.VerifyTicket(ticket); err == nil {
+		t.Fatal("a ticket from before the restart was accepted")
 	}
 	fresh := during.New("remi", "anysite.com", 3)
 

@@ -116,7 +116,7 @@ All variables, ports, security model, troubleshooting: [docs/configuration.md](d
 
 ## Security notes
 
-- **Cross-domain login** uses single-use tickets valid for 60 seconds, bound to the target site; only sites listed in `ALLOWED_HOSTS` can use the login, and each site's cookie is bound to its host.
+- **Cross-domain login** uses tickets valid for 60 seconds, single-use **in the memory of the running process only** (a ticket never survives a restart and is refused by any other instance; [details](docs/security.md#single-use-of-tickets)), bound to the target site; only sites listed in `ALLOWED_HOSTS` can use the login, and each site's cookie is bound to its host.
   Threat model, known gaps and what is tested: [docs/security.md](docs/security.md#cross-domain-login-threat-model).
 - **Behind Traefik:** set `TRUSTED_PROXIES` to Traefik's range, keep `trustForwardHeader` off, keep `/_wap/verify` off the public router, and **never expose ports 8081 and 8082**.
   `RP_ORIGINS` is checked against the origin the browser signed, not against `Host` or `X-Forwarded-*`. Details: [docs/reverse-proxy.md](docs/reverse-proxy.md).

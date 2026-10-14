@@ -118,7 +118,7 @@ Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/conf
 
 ## Notes de sécurité
 
-- **Le login multi-domaines** utilise des tickets à usage unique valables 60 secondes, liés au site cible ; seuls les sites listés dans `ALLOWED_HOSTS` peuvent utiliser le login, et le cookie de chaque site est lié à son hôte.
+- **Le login multi-domaines** utilise des tickets valables 60 secondes, à usage unique **uniquement dans la mémoire du processus en cours** (un ticket ne survit pas à un redémarrage et est refusé par toute autre instance ; [détails](docs/security.md#single-use-of-tickets), en anglais), liés au site cible ; seuls les sites listés dans `ALLOWED_HOSTS` peuvent utiliser le login, et le cookie de chaque site est lié à son hôte.
   Modèle de menace, limites connues et ce qui est testé : [docs/security.md](docs/security.md#cross-domain-login-threat-model) (en anglais).
 - **Derrière Traefik :** réglez `TRUSTED_PROXIES` sur la plage de Traefik, laissez `trustForwardHeader` désactivé, gardez `/_wap/verify` hors du routeur public, et **n'exposez jamais les ports 8081 et 8082**.
   `RP_ORIGINS` est vérifié par rapport à l'origine signée par le navigateur, pas par rapport à `Host` ni `X-Forwarded-*`. Détails : [docs/reverse-proxy.md](docs/reverse-proxy.md).

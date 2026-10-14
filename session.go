@@ -30,17 +30,24 @@ type Sessions struct {
 	ttl   time.Duration
 	idle  time.Duration // 0 = no idle timeout
 	now   func() time.Time
+	boot  string // identifies this process; written into tickets (see NewTicket)
 }
 
 // NewSessions returns a Sessions signing with current and also accepting the previous keys.
 func NewSessions(current []byte, previous [][]byte, ttl, idle time.Duration) *Sessions {
 	s := &Sessions{ttl: ttl, idle: idle, now: time.Now}
+	b := make([]byte, bootLen)
+	_, _ = rand.Read(b)
+	s.boot = b64.EncodeToString(b)
 	for _, k := range append([][]byte{current}, previous...) {
 		s.keys = append(s.keys, k)
 		s.pools = append(s.pools, &sync.Pool{})
 	}
 	return s
 }
+
+// bootLen is the size in bytes of the per-process identifier written into every ticket.
+const bootLen = 9
 
 // ticketTTL is how long a login ticket stays valid; it is also single-use.
 const ticketTTL = 60 * time.Second
@@ -201,7 +208,10 @@ func (s *Sessions) Verify(v string) (user, aud string, gen int64, err error) {
 func (s *Sessions) NewTicket(user, aud string, gen int64) string {
 	n := make([]byte, 16)
 	_, _ = rand.Read(n)
-	return s.token("t", user, aud, s.now().Add(ticketTTL), gen, b64.EncodeToString(n))
+	// The ticket carries the identifier of the process that issued it (s.boot, 12 characters). Single use is
+	// enforced by an in-memory set of nonces, which a restart empties: a ticket from an earlier run, or from another
+	// instance, is therefore refused rather than redeemable a second time.
+	return s.token("t", user, aud, s.now().Add(ticketTTL), gen, s.boot+b64.EncodeToString(n))
 }
 
 // VerifyTicket returns the ticket's user, audience, generation, nonce and expiry if it is valid.
@@ -218,6 +228,9 @@ func (s *Sessions) VerifyTicket(v string) (user, aud string, gen int64, nonce st
 	}
 	if gen, err = strconv.ParseInt(p[3], 10, 64); err != nil {
 		return "", "", 0, "", time.Time{}, err
+	}
+	if !strings.HasPrefix(p[4], s.boot) || len(p[4]) <= len(s.boot) {
+		return "", "", 0, "", time.Time{}, errors.New("ticket from another run")
 	}
 	return user, aud, gen, p[4], exp, nil
 }

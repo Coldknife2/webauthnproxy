@@ -38,7 +38,7 @@ Sections: [session tokens](#session-tokens-hmac-signed-cookies) · [key rotation
 - No `alg` field, so none of the JWT pitfalls (`alg: none`, algorithm confusion). A fixed algorithm, a fixed layout.
 - Every field is covered by the signature, and fields are base64url-encoded so a value can never inject a separator.
 - Session cookies and login tickets use separate signing domains: one can never be accepted as the other.
-- The audience binds a site's cookie to its host; tickets are single-use and expire after 60 s.
+- The audience binds a site's cookie to its host; tickets expire after 60 s and are single-use **within one process, in memory only** (see [Single use of tickets](#single-use-of-tickets)).
 - **Revocation.** Each user has a session generation, stored in `users.json`. Signing out (see [forwardAuth](forwardauth.md)) increments it, so every token issued earlier,
   including a copied one, is refused on the next request, on every site. Deleting a user does the same.
 - `HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS.
@@ -52,7 +52,7 @@ Sections: [session tokens](#session-tokens-hmac-signed-cookies) · [key rotation
 - The signing key can be [rotated without signing anybody out](#key-rotation), and an [idle timeout](#idle-timeout) can be added, still without server-side state.
 - Tokens are signed, not encrypted: the holder can read the user name inside.
 - There is no device binding (IP or User-Agent); it breaks too often on mobile networks.
-- Ticket replay protection is kept in memory and resets on restart (the 60 s window still applies). One instance only.
+- Ticket single use is kept in memory, per process. A ticket never survives a restart and is never accepted by another instance, so it cannot be spent twice; the price is that a login in flight during a restart fails and starts again. One instance only.
 
 **Compared with server-side session IDs** (Authelia, Tinyauth): equivalent security with a strong secret. A server-side store can list and revoke single sessions and holds no key that
 can forge them, at the cost of a database and a lookup per request. Here, stateless verification is what keeps memory and CPU low
@@ -124,6 +124,21 @@ Every line carries `ip` (the client address as defined above) and `path`. Cookie
 The one-time bootstrap token is printed in the regular log on purpose, so that the operator can read it. Log retention and shipping are up to you.
 *Tested:* unit tests (events emitted, JSON shape, no secret in the output, disabled mode) and the end-to-end suite (login and enrollment events present, no cookie in the logs).
 
+## Single use of tickets
+
+Tickets are signed, stateless values, so a signature alone cannot make them single-use. The guarantee is **a set of used nonces held in the memory of the process**:
+
+| Case | Result | Test |
+|---|---|---|
+| Same ticket presented twice to the same process | second use refused (`403`, audit `ticket_rejected`, reason `replay`) | `TestTicketReplaySameProcess` |
+| Ticket used, then the container restarts, then the ticket is presented again (still within 60 s) | refused: every ticket carries a random identifier of the process that issued it, regenerated at each start | `TestTicketReplayAfterRestartRefused` |
+| Two instances with the same keys and data; ticket issued by one, presented to the other | refused on the other; accepted once on the issuer, then refused | `TestTicketTwoInstances` |
+| Validly signed ticket without the identifier (older format) | refused | `TestTicketForgedBootRefused` |
+
+What this means, without rounding: **single use is guaranteed only while the issuing process lives.** It is not stored on disk and not shared. Before this identifier existed, a ticket used shortly before a restart could be
+redeemed once more in its remaining seconds; that is fixed, at the cost that a login in flight during a restart (or a key rotation, which needs a restart) fails once and the user signs in again.
+Session cookies are unaffected by restarts. A multi-instance deployment would need shared state for the nonces and is not supported.
+
 ## Cross-domain login: threat model
 
 Applies to `MODE=forward` when the protected sites are on domains unrelated to the login host (`ALLOWED_HOSTS`). The flow itself is described in [forwardauth.md](forwardauth.md).
@@ -137,7 +152,7 @@ Applies to `MODE=forward` when the protected sites are on domains unrelated to t
 | Property | How it is enforced | Covered by |
 |---|---|---|
 | Ticket lifetime: **60 seconds** | expiry inside the signed ticket | unit test |
-| **Single use** | the ticket nonce is remembered (in memory) until it expires | unit tests; e2e: replayed ticket refused |
+| **Single use** | the ticket nonce is remembered **in memory of the issuing process** until it expires; the ticket carries the identifier of that process, so tickets from another run or instance are refused | unit tests: replay, after a restart, on a second instance, without identifier; e2e: replayed ticket refused |
 | **Bound to the target host** | the ticket carries the host it was issued for; `/_wap/callback` compares it with `X-Forwarded-Host` | unit test; e2e: a fresh ticket is refused on another site and accepted on its own |
 | **Bound to the user's session generation** | signing out increments it, so tickets issued before are refused | unit test (e2e covers the cookies, not a ticket held across a sign-out) |
 | The site cookie is **host-only and bound to its host** | no `Domain` attribute; the audience is signed into the token | unit tests; e2e: a site's cookie is refused on another site |
@@ -148,7 +163,7 @@ Applies to `MODE=forward` when the protected sites are on domains unrelated to t
 
 **Known gaps and residual risks (not covered by a test unless stated):**
 
-- **Replay across a restart.** Used ticket nonces live in memory. A ticket used shortly before a restart could be used once more during the remaining seconds of its 60 s life. *Not mitigated, not tested.*
+- **Single use is not persistent and not shared.** Nothing is written to disk and nothing is shared between instances; see [Single use of tickets](#single-use-of-tickets). Running two instances against the same data is unsupported: a login that starts on one and ends on the other fails.
 - **The ticket is in a URL.** `/_wap/callback?ticket=…` can appear in the access logs of Traefik or of the site. Single use and the 60 s limit make a logged ticket almost worthless afterwards,
   but someone who reads logs in real time could race the user. Treat log access as part of the trusted base. *By design, not tested.*
 - **Wildcards widen the trust.** `*.example.org` trusts every present and future subdomain; a dangling DNS record (subdomain takeover) would let an attacker receive tickets and cookies for users who visit it

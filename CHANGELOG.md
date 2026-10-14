@@ -9,6 +9,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 - The session token gained a last-activity field (`user.aud.exp.gen.seen.signature`): existing cookies are refused once, users sign in again.
 
 ### Security
+- Cross-domain tickets carry an identifier of the issuing process: a ticket used before a restart can no longer be redeemed again, and an instance refuses tickets it did not issue. Single use remains in-memory only, now documented as such with a test per case (replay, restart, two instances).
 - Rate limiting on login and enrolment endpoints, per client address (IPv6 grouped by /64) and globally; `429` with `Retry-After`. `RATE_LIMIT_IP` (default `20/1m`), `RATE_LIMIT_GLOBAL` (default `200/1m`), `off` disables.
 - Session key rotation: `SESSION_SECRET_PREVIOUS` / `data/session.key.previous` keep older keys valid for verification only.
 - Idle timeout without server state (`SESSION_IDLE_TIMEOUT`); with Traefik it needs `addAuthCookiesToResponse: [wap_session]`.

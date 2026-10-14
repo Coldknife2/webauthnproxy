@@ -206,3 +206,93 @@ func mustTrust(s string) []netip.Prefix {
 	}
 	return p
 }
+
+// ---- single use of cross-domain tickets: what is guaranteed, and where ----
+//
+// A ticket is a signed token, so "single use" comes from an in-memory set of nonces (App.seen). Three cases:
+// replay in the same process (refused), replay after a restart, and redemption on a second instance.
+
+// issueTicket runs the sso step and returns the callback query holding a ticket for anysite.com.
+func issueTicket(t *testing.T, a *App) string {
+	t.Helper()
+	cookie := a.sessions.New("remi", "", 0)
+	r := httptest.NewRequest("GET", "/_wap/sso?next="+url.QueryEscape("https://anysite.com/page"), nil)
+	r.Header.Set("Cookie", cookieName+"="+cookie)
+	w := httptest.NewRecorder()
+	a.publicHandler().ServeHTTP(w, r)
+	cb, err := url.Parse(w.Header().Get("Location"))
+	if err != nil || w.Code != 302 {
+		t.Fatalf("sso: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	return cb.RawQuery
+}
+
+// restarted builds a second App with the same database and signing keys but empty memory, as a restarted
+// container (or a second instance sharing the same configuration) would be.
+func restarted(t *testing.T, a *App) *App {
+	t.Helper()
+	b := forwardApp(t)
+	b.store = a.store
+	b.sessions = NewSessions(a.sessions.keys[0], a.sessions.keys[1:], a.cfg.SessionTTL, 0)
+	return b
+}
+
+func TestTicketReplaySameProcess(t *testing.T) {
+	a := forwardApp(t)
+	addUser(t, a)
+	q := issueTicket(t, a)
+	if w := verifyReq(a, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 302 {
+		t.Fatalf("first use: %d", w.Code)
+	}
+	if w := verifyReq(a, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 403 {
+		t.Fatalf("replay accepted: %d", w.Code)
+	}
+}
+
+func TestTicketReplayAfterRestartRefused(t *testing.T) {
+	a := forwardApp(t)
+	addUser(t, a)
+	q := issueTicket(t, a)
+	if w := verifyReq(a, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 302 {
+		t.Fatalf("first use: %d", w.Code)
+	}
+	// the nonce set is gone after a restart; the ticket is still within its 60 s and correctly signed
+	b := restarted(t, a)
+	if w := verifyReq(b, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 403 {
+		t.Fatalf("a ticket used before the restart works again: %d", w.Code)
+	}
+	// an unused ticket does not survive the restart either (the user simply signs in again)
+	a2 := forwardApp(t)
+	addUser(t, a2)
+	q2 := issueTicket(t, a2)
+	if w := verifyReq(restarted(t, a2), "anysite.com", "/_wap/callback?"+q2, ""); w.Code != 403 {
+		t.Fatalf("a ticket from an earlier run was accepted: %d", w.Code)
+	}
+}
+
+func TestTicketTwoInstances(t *testing.T) {
+	a := forwardApp(t)
+	addUser(t, a)
+	b := restarted(t, a) // second instance: same keys, same database, separate memory
+	q := issueTicket(t, a)
+	// redeemed on the other instance: refused (so a ticket cannot be spent once on each instance)
+	if w := verifyReq(b, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 403 {
+		t.Fatalf("ticket accepted by an instance that did not issue it: %d", w.Code)
+	}
+	// on the issuing instance it still works once, then never again
+	if w := verifyReq(a, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 302 {
+		t.Fatalf("issuing instance: %d", w.Code)
+	}
+	if w := verifyReq(a, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 403 {
+		t.Fatalf("replay on the issuing instance: %d", w.Code)
+	}
+}
+
+func TestTicketForgedBootRefused(t *testing.T) {
+	a := forwardApp(t)
+	// a validly signed ticket without the boot identifier (e.g. from an older version) is refused
+	old := a.sessions.token("t", "remi", "anysite.com", time.Now().Add(time.Minute), 0, "AAAAAAAAAAAAAAAAAAAAAA")
+	if w := verifyReq(a, "anysite.com", "/_wap/callback?ticket="+url.QueryEscape(old), ""); w.Code != 403 {
+		t.Fatalf("ticket without boot id accepted: %d", w.Code)
+	}
+}

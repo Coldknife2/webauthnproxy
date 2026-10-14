@@ -12,7 +12,7 @@ Small services that put a passkey login in front of other sites.
 | Project | What it is | Integration | Commits (first → last) | License |
 |---|---|---|---|---|
 | [**Quiq/webauthn_proxy**](https://github.com/Quiq/webauthn_proxy) (Go, v0.6) | described as a "standalone reverse-proxy for passwordless Webauthn authentication"; in practice an auth backend (`/webauthn/auth`, `/webauthn/login`, `/webauthn/verify`) | nginx `auth_request`, OpenResty (+ OAuth2 Proxy); Traefik is not documented | 2022-01-03 → 2026-08-18, 70 commits, 7 tags | Apache-2.0 |
-| [**QirunGao/passkey-forwardauth**](https://github.com/QirunGao/passkey-forwardauth) (Go, v0.2.0) | forward-auth service with discoverable credentials and server-side sessions | any forward-auth reverse proxy | 2026-04-17 → 2026-07-16, 4 commits | Apache-2.0 |
+| [**QirunGao/passkey-forwardauth**](https://github.com/QirunGao/passkey-forwardauth) (Go, v0.2.1) | forward-auth service with discoverable credentials and server-side sessions | any forward-auth reverse proxy | 2026-04-17 → 2026-07-16, 4 commits | Apache-2.0 |
 | [trbroyles1/passkey-authenticator](https://github.com/trbroyles1/passkey-authenticator) (Python) | single-file HTTP reverse proxy with passkey login, JWT sessions, rate limiting, CSRF protection, multi-user | built-in proxy | 2025-10-10 → 2025-11-19, 8 commits | MIT |
 | [andrew-d/homeauth](https://github.com/andrew-d/homeauth) (Go) | small identity provider for homelabs: WebAuthn or magic-link login, OIDC, single JSON file. Its README warns it is "not yet considered secure" | OIDC, nginx `auth_request`, Caddy/Traefik `forward_auth` | 2024-09-02 → 2025-06-20, 74 commits | Apache-2.0 |
 | [mguinness/NginxWebAuthn](https://github.com/mguinness/NginxWebAuthn) (ASP.NET Core) | WebAuthn for nginx `auth_request`; Docker Hub image | nginx | 2025-02-28 → 2025-03-05, 4 commits | MIT |
@@ -63,6 +63,16 @@ are the model this project's sessions were rebuilt on after a first comparison, 
 - **A site with no reverse proxy in front, or several unrelated domains** behind one Traefik: this is where this repo has a reason to exist. These are narrow cases.
 
 These lines are about features read in the code and documentation on 2026-10-14 (sessions code re-read at commit 8f8c63b); passkey-forwardauth was not run for this comparison.
+
+## Credits
+
+This project is not the first of its kind and says so. Ideas taken from the projects above, **read and re-implemented, no code copied**:
+
+- from **passkey-forwardauth**: server-side sessions with a hashed random token, per-session revocation, an idle timeout and optional User-Agent/IP binding; trusting `X-Forwarded-*` only from declared proxies; discoverable (username-less) login;
+- from **Quiq/webauthn_proxy**: the very idea of a small self-hosted passkey gate, and its list of secrets that allows key rotation (this project no longer signs cookies, so it needs none).
+
+What differs is listed in [Why this project rather than passkey-forwardauth?](#why-this-project-rather-than-passkey-forwardauth). Both projects are Apache-2.0; this one is MIT and contains none of their code.
+Thank you to their authors. If you only need what they do, use them: they are older.
 
 ## Identity platforms: a different job
 

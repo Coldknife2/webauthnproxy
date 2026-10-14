@@ -36,6 +36,7 @@ First release. Everything below is new; nothing is claimed beyond what the tests
 - The post-login redirect only accepts a local path or an absolute URL of an allowed site (no open redirect).
 
 ### Documentation
+- Credits to passkey-forwardauth and Quiq/webauthn_proxy (README, `docs/alternatives.md`): which ideas were taken, and that no code was copied.
 - Short README (quick start, two modes, limitations, when not to use it, three differentiators), a French copy, and `docs/`: configuration, enrolment and recovery, forwardAuth, reverse-proxy guide, security model with the cross-domain threat model and its test coverage,
   troubleshooting, prior art and alternatives (dated, sourced, with an experiment showing Tinyauth v5.2.0 does not cover unrelated domains), language choice and performance figures presented as experiments.
 - Tests: Go unit tests (race detector), and end-to-end suites with Chromium and a virtual authenticator against a real Traefik.

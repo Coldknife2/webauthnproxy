@@ -157,4 +157,11 @@ Les mesures de performance sont une **expérience**, pas une promesse : comment 
 La CI ([`ci.yml`](.github/workflows/ci.yml)) teste, puis construit et pousse l'image sur `ghcr.io` pour `main` et les tags `v*`.
 Mise en place et publication : [CONTRIBUTING.md](CONTRIBUTING.md#set-up-ci-and-publish-images). Vulnérabilités : [SECURITY.md](SECURITY.md).
 
+## Remerciements
+
+Les sessions côté serveur (jeton aléatoire, seul son hachage est stocké, révocation par session, délai d'inactivité, liaison optionnelle au User-Agent/à l'IP) suivent la conception de
+[**QirunGao/passkey-forwardauth**](https://github.com/QirunGao/passkey-forwardauth) (Apache-2.0), arrivé le premier ; l'idée de ne croire les en-têtes transmis que depuis des proxys déclarés aussi.
+La conception a été lue puis réimplémentée ; aucun code n'a été copié. [**Quiq/webauthn_proxy**](https://github.com/Quiq/webauthn_proxy) (Apache-2.0) montre depuis 2022 qu'une petite passerelle à passkey pour l'auto-hébergement a sa place.
+Merci à eux deux, et aux auteurs de [go-webauthn](https://github.com/go-webauthn/webauthn), qui fait le travail WebAuthn ici. Crédits et différences : [docs/alternatives.md](docs/alternatives.md) (en anglais).
+
 MIT — [LICENSE](LICENSE)

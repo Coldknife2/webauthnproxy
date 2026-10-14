@@ -156,4 +156,11 @@ CI ([`ci.yml`](.github/workflows/ci.yml)) tests, then builds and pushes the imag
 Setup and releases: [CONTRIBUTING.md](CONTRIBUTING.md#set-up-ci-and-publish-images). Vulnerabilities: [SECURITY.md](SECURITY.md).
 Web UI is English; add `?lang=fr` for French.
 
+## Thanks
+
+The server-side sessions (random token, only its hash stored, per-session revocation, idle timeout, optional User-Agent/IP binding) follow the design of
+[**QirunGao/passkey-forwardauth**](https://github.com/QirunGao/passkey-forwardauth) (Apache-2.0), which got there first; so does the idea of trusting forwarded headers only from declared proxies.
+The design was read and re-implemented; no code was copied. [**Quiq/webauthn_proxy**](https://github.com/Quiq/webauthn_proxy) (Apache-2.0) has been showing since 2022 that a small passkey gate for self-hosters is worth having.
+Thank you both, and the authors of [go-webauthn](https://github.com/go-webauthn/webauthn), which does the WebAuthn work here. Credits and what differs: [docs/alternatives.md](docs/alternatives.md).
+
 MIT — [LICENSE](LICENSE)

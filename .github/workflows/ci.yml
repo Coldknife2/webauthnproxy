@@ -23,6 +23,8 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - run: go build ./...
+      - name: changelog script
+        run: scripts/test-changelog-section.sh
 
   e2e:
     needs: test
@@ -125,3 +127,33 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
+
+  release:
+    # On v* tags only: a GitHub Release whose notes are the CHANGELOG section of that version, with Linux binaries and checksums.
+    # The release fails (nothing is published) if CHANGELOG.md has no notes for the tag.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, e2e, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Release notes from CHANGELOG.md
+        run: scripts/changelog-section.sh "$GITHUB_REF_NAME" > release-notes.md
+      - name: Build binaries
+        run: |
+          mkdir dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o "dist/webauthnproxy-linux-$arch" .
+          done
+          (cd dist && sha256sum webauthnproxy-linux-* > SHA256SUMS)
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" $prerelease --title "$GITHUB_REF_NAME" --notes-file release-notes.md dist/*

@@ -1,50 +1,43 @@
 # Changelog
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
+The project started on 2026-10-14. Until 1.0, minor versions may change behavior; every such change is listed here.
 
 ## [Unreleased]
 
-### Breaking
-- **Forward mode requires `TRUSTED_PROXIES`** (CIDRs of Traefik). `X-Forwarded-*` is believed only from those addresses and `/_wap/verify` answers `403` to anyone else. There is no default.
-- The session token gained a last-activity field (`user.aud.exp.gen.seen.signature`): existing cookies are refused once, users sign in again.
+## [0.1.0] - 2026-10-14
+
+First release. Everything below is new; nothing is claimed beyond what the tests in this repository cover.
 
 ### Added
-- `webauthnproxy passkeys list`, `passkeys revoke <id>` and `signout <user>`: manage passkeys of the running service from `docker exec`, through a private Unix socket (`DATA_DIR/admin.sock`, mode 0600); no more editing `users.json`.
-- `GET /_wap/healthz` and `webauthnproxy healthcheck`; the image declares a `HEALTHCHECK`. `/data` in the image is now owned by the unprivileged user, so named volumes work without `chown`.
-- Two complete examples run by `make examples` (podman or docker compose, Chromium with a virtual passkey): `examples/proxy-traefik` and `examples/two-domains`.
+- **Proxy mode** (`MODE=proxy`): reverse proxy (WebSockets included) requiring a passkey-obtained session; the user is passed in `X-Authenticated-User`, the session cookie is not forwarded.
+- **forwardAuth mode** (`MODE=forward`) for Traefik: `GET /_wap/verify`, a login host, and login across **unrelated domains** through a list of allowed sites (`ALLOWED_HOSTS`: `host`, `host:port`, `*.domain`)
+  using 60-second tickets and per-host cookies; `COOKIE_DOMAIN` is an optional shared-cookie shortcut.
+- Username-less login (discoverable credentials), user verification required by default; users in one atomically written JSON file.
+- **Automatic enrolment** (`ENROLL_ENABLED`, port 8081) protected by existing passkeys, with a bootstrap token while no passkey exists; the last passkey cannot be deleted.
+  **Static enrolment tool** (`TOOL_ENABLED`, port 8082) producing a JSON file imported by hand into `DATA_DIR/import/`.
+- `webauthnproxy passkeys list`, `passkeys revoke <id>` and `signout <user>`, through a private Unix socket (`DATA_DIR/admin.sock`, mode 0600); no more editing `users.json`.
+- `GET /_wap/healthz`, `webauthnproxy healthcheck` and a `HEALTHCHECK` in the image; `/data` is owned by the unprivileged user so named volumes work without `chown`.
+- Two complete examples run by `make examples` (compose, Chromium with a virtual passkey): `examples/proxy-traefik` and `examples/two-domains`.
+- Container images (`linux/amd64`, `linux/arm64`) published to GHCR by GitHub Actions on `main` and on `v*` tags; release binaries and checksums attached to tagged releases.
+- English everywhere by default; French web pages with `?lang=fr`.
 
 ### Security
-- Cross-domain tickets carry an identifier of the issuing process: a ticket used before a restart can no longer be redeemed again, and an instance refuses tickets it did not issue. Single use remains in-memory only, now documented as such with a test per case (replay, restart, two instances).
-- Rate limiting on login and enrolment endpoints, per client address (IPv6 grouped by /64) and globally; `429` with `Retry-After`. `RATE_LIMIT_IP` (default `20/1m`), `RATE_LIMIT_GLOBAL` (default `200/1m`), `off` disables.
-- Session key rotation: `SESSION_SECRET_PREVIOUS` / `data/session.key.previous` keep older keys valid for verification only.
-- Idle timeout without server state (`SESSION_IDLE_TIMEOUT`); with Traefik it needs `addAuthCookiesToResponse: [wap_session]`.
-- Proxy mode removes forged `X-Forwarded-*`/`Forwarded` headers from untrusted clients; `COOKIE_SECURE` (`auto`, `true`, `false`).
-- JSON audit log on standard output (`AUDIT_LOG`): sign-in success/failure, enrolment, credential deletion, sign-out, ticket events, denied hosts and callers. No secrets in it.
+- **Rate limiting** on login and enrolment, per client address (IPv6 grouped by /64) and globally: `RATE_LIMIT_IP` (`20/1m`), `RATE_LIMIT_GLOBAL` (`200/1m`), `429` with `Retry-After`.
+- **`TRUSTED_PROXIES`**: `X-Forwarded-*` is believed only from the declared CIDRs, never by default. Forward mode requires it and `/_wap/verify` answers `403` to other callers;
+  proxy mode strips forged forwarded headers from untrusted clients. `COOKIE_SECURE` (`auto`, `true`, `false`).
+- **Session key rotation** without signing anyone out (`SESSION_SECRET_PREVIOUS`, `session.key.previous`).
+- **Idle timeout** without server state (`SESSION_IDLE_TIMEOUT`); with Traefik it needs `addAuthCookiesToResponse: [wap_session]`.
+- **JSON audit log** on standard output (`AUDIT_LOG`): sign-in success/failure, enrolment, credential deletion, sign-out, ticket and host refusals, rate limiting. No secret in it.
+- Signing out **revokes** every session and ticket of the user (per-user generation stored in `users.json`); on a protected site only `POST /_wap/logout` revokes, `GET` just clears that site's cookie.
+- Tickets are **single-use in the memory of the issuing process only**; they carry the identifier of that process, so a ticket never survives a restart and another instance refuses it. Tests cover replay, restart and two instances ([docs/security.md](docs/security.md#single-use-of-tickets)).
+- `SESSION_SECRET` must have 32 characters at least; tokens are HMAC-SHA256 signed with separate signing domains for sessions and tickets.
+- The post-login redirect only accepts a local path or an absolute URL of an allowed site (no open redirect).
 
 ### Documentation
-- README restructured: security notes, limitations, "when not to use it"; prior art cited (Quiq/webauthn_proxy, passkey-forwardauth and others, dated, with sources) in `docs/alternatives.md`, with an experiment showing Tinyauth v5.2.0 does not cover unrelated domains.
-- New `docs/reverse-proxy.md` (forwarded headers, `RP_ORIGINS`, what must stay private); cross-domain threat model and test coverage in `docs/security.md`; account recovery procedure; performance figures presented as an experiment.
+- Short README (quick start, two modes, limitations, when not to use it, three differentiators), a French copy, and `docs/`: configuration, enrolment and recovery, forwardAuth, reverse-proxy guide, security model with the cross-domain threat model and its test coverage,
+  troubleshooting, prior art and alternatives (dated, sourced, with an experiment showing Tinyauth v5.2.0 does not cover unrelated domains), language choice and performance figures presented as experiments.
+- Tests: Go unit tests (race detector), and end-to-end suites with Chromium and a virtual authenticator against a real Traefik.
 
-### Security
-- Signing out now **revokes** every session and ticket of the user (per-user session generation stored in `users.json`), on all sites and devices; on a protected site only `POST /_wap/logout` revokes, `GET` just clears that site's cookie.
-- `SESSION_SECRET` must now be at least 32 characters (was 16).
-- Session token layout gained a generation field (`user.aud.exp.gen.signature`); existing cookies are refused and users sign in again.
-
-### Changed
-- Hot path (`/_wap/verify`) optimized: pooled HMAC, no user copy per request, no URL parsing for ordinary requests (~30 % faster, 25 → 17 allocations).
-
-### Added
-- `GET /_wap/verify` is excluded from the login host's public router in the forwardAuth example; e2e checks cover host-bound tickets, the open-redirect refusal and that the public router does not expose `/_wap/verify`.
-- Footprint comparison with Pocket ID + Tinyauth alongside Authelia (`make bench`), and a language comparison of the hot path in Go, Rust, .NET, Node and Python (`make bench-langs`); see `docs/performance.md` and `docs/language-choice.md`.
-- Footprint benchmark against Authelia (`make bench`) and Go micro-benchmarks (`make bench-go`); results in `docs/performance.md`.
-- Documentation split: short README (quick start first), details in `docs/`; comparison with Pocket ID + Tinyauth and Authelia; manual run of the CI on `main` to publish images.
-- forwardAuth across **unrelated domains**: `auth.com` can protect `anysite.com` and other sites through a shortlist (`ALLOWED_HOSTS`: `host`, `host:port`, `*.domain`), using single-use 60-second tickets and per-host cookies bound to their site; `/_wap/sso`, `/_wap/callback` and `/_wap/logout` endpoints. `COOKIE_DOMAIN` becomes optional (shared-cookie shortcut).
-- Container images (`linux/amd64`, `linux/arm64`) built and published to GHCR by GitHub Actions on every push to `main` and on `v*` tags (optional Docker Hub mirror), `--version` flag.
-- English by default everywhere (code, logs, errors, web pages); French web pages with `?lang=fr` (remembered in the browser).
-- **Proxy** mode: reverse proxy (WebSockets included) requiring a passkey-obtained session; the user is passed in `X-Authenticated-User`, the session cookie is not forwarded.
-- **forwardAuth** mode (`MODE=forward`) for Traefik: `/_wap/verify` endpoint, dedicated login host, cookie shared on `COOKIE_DOMAIN`, post-login redirect restricted to that domain.
-- **Automatic enrollment** (`ENROLL_ENABLED`, port 8081) protected by existing passkeys; bootstrap token printed in the logs while no passkey exists; the last passkey cannot be deleted.
-- **Static enrollment tool** (`TOOL_ENABLED`, port 8082): standalone HTML page producing a JSON file to import by hand into `DATA_DIR/import/`.
-- Usernameless login (discoverable credentials), user verification required by default (`USER_VERIFICATION`).
-- Database: a single atomically written JSON file.
-- Non-root distroless image, Docker Compose / Traefik examples, unit tests and end-to-end tests (Chromium + virtual authenticator, real Traefik).
+[Unreleased]: https://github.com/coldknife2/webauthnproxy/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/coldknife2/webauthnproxy/releases/tag/v0.1.0

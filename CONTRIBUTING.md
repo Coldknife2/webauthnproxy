@@ -51,7 +51,9 @@ The `image` job of [`ci.yml`](.github/workflows/ci.yml) runs after `test` and `e
 5. **Optional Docker Hub mirror**: add the secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (token with write access). The same tags are then also pushed
    to `docker.io/<username>/webauthnproxy`. Without them, only GHCR is used.
 
-**Release**: update [CHANGELOG.md](CHANGELOG.md), then `git tag v1.0.0 && git push origin v1.0.0`.
+**Release**: move the `[Unreleased]` notes of [CHANGELOG.md](CHANGELOG.md) under a new `## [X.Y.Z] - date` heading (and update the links at the bottom), commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+The tag triggers the CI: tests, images `X.Y.Z`/`X.Y` (and `X` from 1.0) on GHCR, then a GitHub Release whose notes are that CHANGELOG section (the job fails if the section is missing), with Linux amd64/arm64 binaries and `SHA256SUMS`.
+Versions below 1.0 may change behavior between minors; say so in the notes.
 
 ## Translations
 

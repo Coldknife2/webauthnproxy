@@ -36,6 +36,8 @@ type App struct {
 	login    *Ceremonies[webauthn.SessionData]
 	enroll   *Ceremonies[enrollState]
 
+	seen Seen // used ticket nonces
+
 	bootMu sync.Mutex
 	boot   string // enrollment bootstrap token (empty database)
 }
@@ -77,6 +79,7 @@ func (a *App) publicHandler() http.Handler {
 	mux.HandleFunc("POST "+prefix+"/logout", a.logout)
 	if a.cfg.Mode == "forward" {
 		mux.HandleFunc(prefix+"/verify", a.verify)
+		mux.HandleFunc("GET "+prefix+"/sso", a.sso)
 		mux.HandleFunc("GET /{$}", a.home)
 	} else {
 		mux.Handle("/", a.requireAuth(a.reverseProxy()))
@@ -84,6 +87,7 @@ func (a *App) publicHandler() http.Handler {
 	return mux
 }
 
+// cookie builds the login host's session cookie (shared on COOKIE_DOMAIN when configured).
 func (a *App) cookie(r *http.Request, value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
 		Name: cookieName, Value: value, Path: "/", Domain: a.cfg.CookieDomain,
@@ -92,21 +96,99 @@ func (a *App) cookie(r *http.Request, value string, maxAge int) *http.Cookie {
 	}
 }
 
+// hostCookie builds a host-only cookie for a protected site (issued through the ticket exchange).
+func (a *App) hostCookie(r *http.Request, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name: cookieName, Value: value, Path: "/",
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: maxAge, Secure: isSecure(r),
+	}
+}
+
+func (a *App) ssoURL() string {
+	return a.cfg.LoginURL.Scheme + "://" + a.cfg.LoginURL.Host + prefix + "/sso"
+}
+
 // verify is Traefik's forwardAuth endpoint: 2xx = allowed, otherwise the response is returned to the client.
+// Traefik passes the original request in X-Forwarded-* headers, and the original cookies.
 func (a *App) verify(w http.ResponseWriter, r *http.Request) {
-	name, ok := a.currentUser(r)
-	if ok {
+	host := strings.ToLower(r.Header.Get("X-Forwarded-Host"))
+	if !a.cfg.HostAllowed(host) {
+		http.Error(w, "host not allowed", http.StatusForbidden)
+		return
+	}
+	proto := r.Header.Get("X-Forwarded-Proto")
+	if proto == "" {
+		proto = "http"
+	}
+	uri := r.Header.Get("X-Forwarded-Uri")
+	if p, err := url.Parse(uri); err == nil {
+		switch p.Path {
+		case prefix + "/callback": // the login host sent the user back with a ticket
+			a.callback(w, r, host, p.Query())
+			return
+		case prefix + "/logout": // sign out of this site
+			http.SetCookie(w, a.hostCookie(r, "", -1))
+			http.SetCookie(w, a.cookie(r, "", -1))
+			http.Redirect(w, r, a.cfg.LoginURL.String(), http.StatusFound)
+			return
+		}
+	}
+	// A cookie is valid for this site if it was issued for this very host, or if it is the shared
+	// login-host cookie and the site lies within COOKIE_DOMAIN.
+	if name, aud, ok := a.session(r); ok && (aud == host || (aud == "" && a.cfg.InCookieDomain(host))) {
 		w.Header().Set(a.cfg.UserHeader, name)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	method := r.Header.Get("X-Forwarded-Method")
 	if (method == "" || method == http.MethodGet) && strings.Contains(r.Header.Get("Accept"), "text/html") {
-		orig := r.Header.Get("X-Forwarded-Proto") + "://" + r.Header.Get("X-Forwarded-Host") + r.Header.Get("X-Forwarded-Uri")
-		http.Redirect(w, r, a.cfg.LoginURL.String()+"?next="+url.QueryEscape(orig), http.StatusFound)
+		http.Redirect(w, r, a.ssoURL()+"?next="+url.QueryEscape(proto+"://"+host+uri), http.StatusFound)
 		return
 	}
 	http.Error(w, "authentication required", http.StatusUnauthorized)
+}
+
+// callback exchanges a ticket for a host-only session cookie, then sends the user to the page they asked for.
+func (a *App) callback(w http.ResponseWriter, r *http.Request, host string, q url.Values) {
+	user, aud, nonce, exp, err := a.sessions.VerifyTicket(q.Get("ticket"))
+	if err != nil || aud != host || a.store.ByName(user) == nil || !a.seen.Mark(nonce, exp) {
+		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
+		return
+	}
+	next := q.Get("next")
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, `/\`) {
+		next = "/"
+	}
+	proto := "http"
+	if isSecure(r) {
+		proto = "https"
+	}
+	http.SetCookie(w, a.hostCookie(r, a.sessions.New(user, host), int(a.cfg.SessionTTL.Seconds())))
+	// Absolute URL: Traefik resolves a relative Location against the auth service's own address.
+	http.Redirect(w, r, proto+"://"+host+next, http.StatusFound)
+}
+
+// sso runs on the login host: a signed-in user is handed over to the requested site (directly when the
+// site shares the cookie domain, otherwise with a ticket); anyone else is sent to the login page first.
+func (a *App) sso(w http.ResponseWriter, r *http.Request) {
+	next := a.safeNext(r.URL.Query().Get("next"))
+	if strings.HasPrefix(next, "/") {
+		http.Redirect(w, r, next, http.StatusFound)
+		return
+	}
+	name, ok := a.currentUser(r)
+	if !ok {
+		http.Redirect(w, r, prefix+"/login?next="+url.QueryEscape(next), http.StatusFound)
+		return
+	}
+	u, _ := url.Parse(next) // safeNext guarantees a valid absolute URL
+	if a.cfg.InCookieDomain(u.Host) {
+		http.Redirect(w, r, next, http.StatusFound)
+		return
+	}
+	cb := u.Scheme + "://" + u.Host + prefix + "/callback?ticket=" + url.QueryEscape(a.sessions.NewTicket(name, strings.ToLower(u.Host))) +
+		"&next=" + url.QueryEscape(u.RequestURI())
+	http.Redirect(w, r, cb, http.StatusFound)
 }
 
 // home is the authentication host's landing page in forward mode.
@@ -125,7 +207,7 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		signedIn, html.EscapeString(name), prefix, signOut)
 }
 
-// safeNext only allows local paths and, in forward mode, URLs within the cookie domain.
+// safeNext only allows local paths and, in forward mode, absolute URLs of allowed hosts.
 func (a *App) safeNext(next string) string {
 	if next == "" {
 		return "/"
@@ -137,26 +219,39 @@ func (a *App) safeNext(next string) string {
 		return next
 	}
 	u, err := url.Parse(next)
-	if err != nil || a.cfg.Mode != "forward" || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil || a.cfg.Mode != "forward" || (u.Scheme != "http" && u.Scheme != "https") || !a.cfg.HostAllowed(u.Host) {
 		return "/"
 	}
-	h := strings.ToLower(u.Hostname())
-	if h == a.cfg.CookieDomain || strings.HasSuffix(h, "."+a.cfg.CookieDomain) {
-		return next
-	}
-	return "/"
+	return next
 }
 
-func (a *App) currentUser(r *http.Request) (string, bool) {
+// loginTarget is where the login page sends the browser once signed in: local paths as is, allowed
+// sites through the sso endpoint (which hands the session over).
+func (a *App) loginTarget(next string) string {
+	n := a.safeNext(next)
+	if strings.HasPrefix(n, "/") {
+		return n
+	}
+	return prefix + "/sso?next=" + url.QueryEscape(n)
+}
+
+// session returns the signed-in user and the audience of the session cookie.
+func (a *App) session(r *http.Request) (name, aud string, ok bool) {
 	c, err := r.Cookie(cookieName)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
-	name, err := a.sessions.Verify(c.Value)
+	name, aud, err = a.sessions.Verify(c.Value)
 	if err != nil || a.store.ByName(name) == nil { // deleted user => invalid session
-		return "", false
+		return "", "", false
 	}
-	return name, true
+	return name, aud, true
+}
+
+// currentUser returns the user of a login-host session (audience "").
+func (a *App) currentUser(r *http.Request) (string, bool) {
+	name, aud, ok := a.session(r)
+	return name, ok && aud == ""
 }
 
 func (a *App) requireAuth(next http.Handler) http.Handler {
@@ -235,8 +330,8 @@ func (a *App) loginFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	u := user.(*User)
 	_ = a.store.UpdateCredential(u.ID, cred)
-	http.SetCookie(w, a.cookie(r, a.sessions.New(u.Name), int(a.cfg.SessionTTL.Seconds())))
-	writeJSON(w, 200, map[string]string{"next": a.safeNext(r.URL.Query().Get("next"))})
+	http.SetCookie(w, a.cookie(r, a.sessions.New(u.Name, ""), int(a.cfg.SessionTTL.Seconds())))
+	writeJSON(w, 200, map[string]string{"next": a.loginTarget(r.URL.Query().Get("next"))})
 }
 
 // ---------------------------------------------------------------- automatic enrollment

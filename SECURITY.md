@@ -15,7 +15,7 @@ The project is young: only the latest release (or the `main` branch) receives fi
 
 ## Scope
 
-In scope: authentication bypass, session fixation/forgery, open redirect, leakage of the session cookie or secrets, CSRF on the
+In scope: authentication bypass, session fixation/forgery, ticket replay or cross-site session reuse in forward mode, open redirect, leakage of the session cookie or secrets, CSRF on the
 enrollment endpoints, unvalidated passkey import.
 
 Out of scope (see the [Security model](README.md#security-model) in the README): denial of service through request volume

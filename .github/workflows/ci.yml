@@ -48,6 +48,11 @@ jobs:
         env:
           RUNTIME: docker
         run: npm run test:forward
+      - name: e2e forwardAuth across domains (Traefik)
+        working-directory: test/e2e
+        env:
+          RUNTIME: docker
+        run: npm run test:crossdomain
 
   image:
     # Builds the image on every run; pushes it to the registries only on pushes to main and on v* tags,

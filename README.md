@@ -30,7 +30,7 @@ No passwords, no directory, no OIDC provider to deploy. Put it in front of a sit
 ## Features
 
 - 🔐 **Passkey-only** login, no username to type (discoverable credentials), user verification (PIN / biometrics) required by default.
-- 🔁 Two modes: built-in **proxy** (with or without Traefik, WebSockets included) or Traefik **forwardAuth** (one deployment, many sites).
+- 🔁 Two modes: built-in **proxy** (with or without Traefik, WebSockets included) or Traefik **forwardAuth** (one deployment, many sites, **on any domains**: `auth.com` protects `anysite.com` through a shortlist of allowed hosts).
 - ➕ Two ways to **enroll** passkeys, enabled independently: automatic enrollment protected by existing passkeys, or a static HTML tool plus a manual JSON import.
 - 🗃️ **The database is one JSON file** (public keys only), written atomically.
 - 📦 **Distroless** image, non-root user, ~13 MB; a few hundred lines of Go to audit.
@@ -163,23 +163,53 @@ Suited to a single site, with or without Traefik. The `/_wap/` prefix is reserve
 ### forwardAuth mode (`MODE=forward`)
 
 The service relays nothing: Traefik queries `/_wap/verify` for every request and either lets it through (2xx) or returns the service's
-response (a redirect to `LOGIN_URL` for browsers, `401` otherwise). **A single deployment protects as many sites as you like** by adding the
-middleware to their routers.
+response (a redirect to the login host for browsers, `401` otherwise). **A single deployment protects as many sites as you like**, even on
+unrelated domains: `auth.com` can protect `anysite.com`, `other.org`, `app.example.net`…
 
 ```yaml
-# reusable middleware
+# reusable middleware (declared once, e.g. on the webauthnproxy container)
 - traefik.http.middlewares.passkey.forwardauth.address=http://webauthnproxy:8080/_wap/verify
 - traefik.http.middlewares.passkey.forwardauth.authResponseHeaders=X-Authenticated-User
-# on each router to protect
+# on each router to protect, whatever its domain
 - traefik.http.routers.mysite.middlewares=passkey
 ```
 
-Mode-specific variables: `LOGIN_URL` (public URL of the login page, e.g. `https://auth.example.com/_wap/login`) and
-`COOKIE_DOMAIN` (shared parent domain, e.g. `example.com`: every protected site must be a subdomain of it).
-After login, returning to the requested page is only accepted for URLs within that domain.
+**Why not simply a shared cookie?** A browser never sends the cookie of `auth.com` to `anysite.com`. Cookies can only be shared between
+subdomains of one parent domain. For the general case, the login host therefore hands the user over to each site with a short-lived
+**ticket**, and each site gets its **own** cookie:
 
-Good to know: `/_wap/verify` must only be reachable by Traefik (internal network); Traefik forwards the session cookie to the sites;
-there are no per-site rules, so any enrolled passkey grants access to **all** protected sites.
+```
+1. Browser ─► anysite.com/page ─► Traefik ─► /_wap/verify: no cookie for this site
+              └─► 302 https://auth.com/_wap/sso?next=https://anysite.com/page
+2. auth.com: not signed in yet ─► passkey login (once)
+3. auth.com ─► 302 https://anysite.com/_wap/callback?ticket=…     ticket: signed, single-use, valid 60 s, for anysite.com only
+4. Traefik ─► /_wap/verify (callback) ─► sets a cookie for anysite.com only ─► 302 /page
+5. Next requests: /_wap/verify checks that cookie.  Another site (other.org): steps 1, 3, 4 again, without a new passkey prompt.
+```
+
+**Shortlist of sites: `ALLOWED_HOSTS`.** Only the sites you list can use the login; any other host is refused (`403`) even if a Traefik
+router sends it through the middleware, and the post-login redirect can only go to a listed site.
+Entries (comma-separated): `anysite.com` (any port), `anysite.com:8443` (that port only), `*.example.org` (any subdomain, **not** `example.org` itself).
+
+```sh
+LOGIN_URL=https://auth.com/_wap/login      # public URL of the login page (the only place passkeys are used)
+ALLOWED_HOSTS=anysite.com,other.org,*.example.net
+RP_ID=auth.com                             # passkeys belong to the login host's domain, not to the protected sites
+RP_ORIGINS=https://auth.com
+```
+
+**Optional shortcut: `COOKIE_DOMAIN`.** When the login host and the sites share a parent domain (`auth.example.com`, `app.example.com`),
+set `COOKIE_DOMAIN=example.com`: the login cookie is then shared by all its subdomains (they are allowed automatically) and the ticket round trip is skipped
+for them. You can combine both: sites inside `COOKIE_DOMAIN` use the shared cookie, the others the ticket exchange.
+
+Security properties of the exchange:
+
+- Tickets are HMAC-signed, expire after 60 s, are accepted **once**, and only for the host they were issued for.
+- A site's cookie is **bound to its host**: if one protected site's backend leaks the cookie it receives (Traefik forwards cookies), it is useless on any other site.
+- Users deleted from the database lose access on the very next request, on every site.
+- `https://anysite.com/_wap/logout` signs out of that site (clears its cookie). Signing out of the login host does **not** revoke cookies already issued to sites;
+  they remain valid until `SESSION_TTL` expires, so choose it accordingly. The `/_wap/` prefix is reserved on protected sites too.
+- `/_wap/verify` must only be reachable by Traefik (internal network). There are no per-site rules: any enrolled passkey grants access to **all** listed sites.
 
 ## Enrolling passkeys
 
@@ -250,8 +280,9 @@ Everything is set through environment variables.
 | `MODE` | `proxy` | `proxy` or `forward` (Traefik forwardAuth) |
 | `UPSTREAM` | – | **Proxy mode.** URL of the site to protect (`http://mysite:80`) |
 | `LOGIN_URL` | – | **Forward mode.** Public URL of the login page |
-| `COOKIE_DOMAIN` | – | **Forward mode.** Parent domain of the cookie (`example.com`) |
-| `RP_ID` | – (required) | WebAuthn domain: the site's domain or a common parent (`example.com`, `localhost`) |
+| `ALLOWED_HOSTS` | – | **Forward mode.** Shortlist of sites allowed to use the login: `host`, `host:port`, `*.domain`, comma-separated |
+| `COOKIE_DOMAIN` | – | **Forward mode, optional.** Parent domain shared with the login host (`example.com`); its subdomains are allowed automatically. Forward mode needs `ALLOWED_HOSTS` and/or `COOKIE_DOMAIN` |
+| `RP_ID` | – (required) | WebAuthn domain: the domain of the page where passkeys are used, or a parent (`example.com`, `localhost`). In forward mode this is the login host's domain |
 | `RP_ORIGINS` | – (required) | Origins allowed for login/enrollment, comma-separated (public URL, no trailing `/`) |
 | `RP_NAME` | `WebAuthn Proxy` | Name shown by the authenticator |
 | `LISTEN` | `:8080` | Proxy / `/_wap/verify` port |
@@ -275,7 +306,8 @@ Ports: only `8080` should be publicly exposed (through Traefik); keep `8081` pri
 - No request reaches the site without a valid session cookie (HMAC-SHA256 signed, expiring, invalidated if the user is deleted).
 - Login: single-use challenge (5 min), origin and domain verified, signature counter updated, user verification required.
 - Cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` whenever access is over HTTPS; pages are served with a restrictive CSP.
-- The post-login redirect (`next`) is limited to local paths, or to `COOKIE_DOMAIN` in forward mode: no open redirect.
+- The post-login redirect (`next`) is limited to local paths, or in forward mode to the sites in `ALLOWED_HOSTS` / `COOKIE_DOMAIN`: no open redirect.
+- Forward mode across domains: single-use 60-second tickets, per-host cookies bound to their site, requests for unlisted hosts refused (see [forwardAuth mode](#forwardauth-mode-modeforward)).
 - Automatic enrollment: session required, bootstrap token compared in constant time, CSRF protection, the last passkey cannot be deleted.
 - Import: the file is untrusted and fully revalidated (see above), with a size limit.
 - Static tool: no writes, hash-based CSP (`script-src 'sha256-…'`, no `unsafe-inline`).
@@ -345,7 +377,9 @@ Sources: [Pocket ID](https://github.com/pocket-id/pocket-id) ·
 | Import: `.rejected` | Read the logs: wrong domain, duplicate, missing user verification, inconsistent name/ID. |
 | Import ignored | The file must end in `.json`; the container (uid 65532) must be able to read/write `data/import/`. |
 | `permission denied` on `/data` | `chown 65532 data` (rootless podman: `podman unshare chown 65532:65532 data`). |
-| Redirect loop in forward mode | `COOKIE_DOMAIN` does not cover the site, or the login page is reached over HTTP while the cookie is `Secure`. |
+| `403 host not allowed` in forward mode | The site's host (and port) is not matched by `ALLOWED_HOSTS` / `COOKIE_DOMAIN`. Remember `*.example.org` does not match `example.org` itself. |
+| `403 invalid or expired ticket` | The ticket was already used, is older than 60 s, or was issued for another host. Reload the page you wanted; check that `X-Forwarded-Host` reaches the service unchanged. |
+| Redirect loop in forward mode | The browser rejects the site cookie: check that the site is reached over the same scheme Traefik reports (`X-Forwarded-Proto`), and that the `/_wap/callback` path is not intercepted by another router or middleware. |
 | Can't find the bootstrap token | `podman logs webauthnproxy`, line "Enrollment bootstrap token". |
 
 ## Development

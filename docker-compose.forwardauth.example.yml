@@ -21,8 +21,10 @@ services:
     environment:
       MODE: forward
       LOGIN_URL: https://auth.example.com/_wap/login
-      COOKIE_DOMAIN: example.com            # cookie shared by all subdomains
-      RP_ID: example.com
+      # Shortlist of the sites this login may protect, on ANY domain (host, host:port or *.domain):
+      ALLOWED_HOSTS: app.example.com,anysite.com,*.example.org
+      # COOKIE_DOMAIN: example.com          # optional shortcut: shared cookie for the subdomains of one parent domain
+      RP_ID: example.com                    # domain of the LOGIN host (passkeys live there, not on the protected sites)
       RP_ORIGINS: https://auth.example.com  # origin of the login page (+ the enrollment page's if enabled)
       # ENROLL_ENABLED: "true"   # automatic enrollment (8081); TOOL_ENABLED=true for the static tool (8082)
     volumes:

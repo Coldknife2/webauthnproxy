@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -13,7 +14,8 @@ import (
 type Config struct {
 	Mode          string        // MODE: "proxy" (default) or "forward" (Traefik forwardAuth)
 	LoginURL      *url.URL      // LOGIN_URL (forward mode): public URL of the login page
-	CookieDomain  string        // COOKIE_DOMAIN (forward mode): parent domain of the session cookie
+	CookieDomain  string        // COOKIE_DOMAIN (forward mode, optional): parent domain shared by the login host and the sites
+	AllowedHosts  []string      // ALLOWED_HOSTS (forward mode): sites allowed to use this login (host, host:port, *.suffix)
 	Upstream      *url.URL      // UPSTREAM (proxy mode): site to protect
 	Listen        string        // LISTEN: proxy port
 	EnrollEnabled bool          // ENROLL_ENABLED: automatic enrollment (passkey-protected)
@@ -28,6 +30,49 @@ type Config struct {
 	SessionTTL    time.Duration // SESSION_TTL
 	PreserveHost  bool          // PRESERVE_HOST: forward the client's Host to the upstream
 	UserHeader    string        // USER_HEADER: header carrying the user name to the upstream
+}
+
+func splitHost(hp string) (host, port string) {
+	if h, p, err := net.SplitHostPort(hp); err == nil {
+		return strings.ToLower(h), p
+	}
+	return strings.ToLower(hp), ""
+}
+
+// InCookieDomain reports whether host[:port] is COOKIE_DOMAIN or one of its subdomains.
+func (c *Config) InCookieDomain(hostport string) bool {
+	if c.CookieDomain == "" {
+		return false
+	}
+	h, _ := splitHost(hostport)
+	return h == c.CookieDomain || strings.HasSuffix(h, "."+c.CookieDomain)
+}
+
+// HostAllowed reports whether a site (host[:port]) may use this login: it is within COOKIE_DOMAIN or
+// matches an ALLOWED_HOSTS entry. An entry is "host" (any port), "host:port" or "*.domain" (subdomains
+// only, not the apex).
+func (c *Config) HostAllowed(hostport string) bool {
+	if c.InCookieDomain(hostport) {
+		return true
+	}
+	h, p := splitHost(hostport)
+	if h == "" {
+		return false
+	}
+	for _, pat := range c.AllowedHosts {
+		ph, pp := splitHost(pat)
+		if pp != "" && pp != p {
+			continue
+		}
+		if strings.HasPrefix(ph, "*.") {
+			if strings.HasSuffix(h, ph[1:]) && len(h) > len(ph)-1 {
+				return true
+			}
+		} else if ph == h {
+			return true
+		}
+	}
+	return false
 }
 
 func getenv(k, def string) string {
@@ -75,8 +120,16 @@ func LoadConfig() (*Config, error) {
 		}
 		c.LoginURL = lu
 		c.CookieDomain = strings.ToLower(strings.TrimPrefix(getenv("COOKIE_DOMAIN", ""), "."))
-		if c.CookieDomain == "" {
-			return nil, fmt.Errorf("COOKIE_DOMAIN is required in forward mode (e.g. example.com)")
+		for _, h := range strings.Split(os.Getenv("ALLOWED_HOSTS"), ",") {
+			if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+				if strings.Contains(h, "/") || strings.Contains(h, " ") {
+					return nil, fmt.Errorf("invalid ALLOWED_HOSTS entry %q (expected host, host:port or *.domain)", h)
+				}
+				c.AllowedHosts = append(c.AllowedHosts, h)
+			}
+		}
+		if c.CookieDomain == "" && len(c.AllowedHosts) == 0 {
+			return nil, fmt.Errorf("forward mode needs ALLOWED_HOSTS (e.g. anysite.com,*.example.org) and/or COOKIE_DOMAIN (e.g. example.com)")
 		}
 	default:
 		return nil, fmt.Errorf("invalid MODE: %q (proxy or forward)", c.Mode)

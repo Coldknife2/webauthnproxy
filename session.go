@@ -16,11 +16,16 @@ import (
 
 const cookieName = "wap_session"
 
-// Sessions: stateless HMAC-signed cookie (name.expiry.signature).
+// Sessions issues stateless HMAC-signed tokens: session cookies and login tickets.
+// A session is bound to an audience: "" for the login host (or a shared cookie domain), or the
+// host of a protected site for the per-host cookies issued through the ticket exchange.
 type Sessions struct {
 	secret []byte
 	ttl    time.Duration
 }
+
+// ticketTTL is how long a login ticket stays valid; it is also single-use.
+const ticketTTL = 60 * time.Second
 
 func loadSecret(dir string, configured []byte) ([]byte, error) {
 	if len(configured) > 0 {
@@ -39,37 +44,104 @@ func loadSecret(dir string, configured []byte) ([]byte, error) {
 
 var b64 = base64.RawURLEncoding
 
-func (s *Sessions) sign(payload string) string {
+// sign separates the token kinds ("s" session, "t" ticket) so one can never be used as the other.
+func (s *Sessions) sign(kind, payload string) string {
 	m := hmac.New(sha256.New, s.secret)
-	m.Write([]byte(payload))
+	m.Write([]byte(kind + "|" + payload))
 	return b64.EncodeToString(m.Sum(nil))
 }
 
-func (s *Sessions) New(userName string) string {
-	payload := b64.EncodeToString([]byte(userName)) + "." +
-		strconv.FormatInt(time.Now().Add(s.ttl).Unix(), 10)
-	return payload + "." + s.sign(payload)
+func (s *Sessions) token(kind, user, aud string, ttl time.Duration, extra ...string) string {
+	parts := append([]string{b64.EncodeToString([]byte(user)), b64.EncodeToString([]byte(aud)),
+		strconv.FormatInt(time.Now().Add(ttl).Unix(), 10)}, extra...)
+	payload := strings.Join(parts, ".")
+	return payload + "." + s.sign(kind, payload)
 }
 
-// Verify returns the user name if the cookie is valid.
-func (s *Sessions) Verify(v string) (string, error) {
+// parse checks the signature and expiry and returns the payload fields.
+func (s *Sessions) parse(kind, v string, fields int) ([]string, time.Time, error) {
 	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
-		return "", errors.New("format")
+	if len(parts) != fields+1 {
+		return nil, time.Time{}, errors.New("format")
 	}
-	payload := parts[0] + "." + parts[1]
-	if !hmac.Equal([]byte(parts[2]), []byte(s.sign(payload))) {
-		return "", errors.New("signature")
+	payload := strings.Join(parts[:fields], ".")
+	if !hmac.Equal([]byte(parts[fields]), []byte(s.sign(kind, payload))) {
+		return nil, time.Time{}, errors.New("signature")
 	}
-	exp, err := strconv.ParseInt(parts[1], 10, 64)
+	exp, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil || time.Now().Unix() > exp {
-		return "", errors.New("expired")
+		return nil, time.Time{}, errors.New("expired")
 	}
-	name, err := b64.DecodeString(parts[0])
+	return parts[:fields], time.Unix(exp, 0), nil
+}
+
+func decode(seg string) (string, error) {
+	b, err := b64.DecodeString(seg)
+	return string(b), err
+}
+
+// New returns a session token for user, bound to audience aud.
+func (s *Sessions) New(user, aud string) string { return s.token("s", user, aud, s.ttl) }
+
+// Verify returns the user name and audience if the session token is valid.
+func (s *Sessions) Verify(v string) (user, aud string, err error) {
+	p, _, err := s.parse("s", v, 3)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return string(name), nil
+	if user, err = decode(p[0]); err != nil {
+		return "", "", err
+	}
+	aud, err = decode(p[1])
+	return user, aud, err
+}
+
+// NewTicket returns a short-lived, single-use ticket granting a session on host aud.
+func (s *Sessions) NewTicket(user, aud string) string {
+	n := make([]byte, 16)
+	_, _ = rand.Read(n)
+	return s.token("t", user, aud, ticketTTL, b64.EncodeToString(n))
+}
+
+// VerifyTicket returns the ticket's user, audience, nonce and expiry if it is valid.
+func (s *Sessions) VerifyTicket(v string) (user, aud, nonce string, exp time.Time, err error) {
+	p, exp, err := s.parse("t", v, 4)
+	if err != nil {
+		return "", "", "", time.Time{}, err
+	}
+	if user, err = decode(p[0]); err != nil {
+		return "", "", "", time.Time{}, err
+	}
+	if aud, err = decode(p[1]); err != nil {
+		return "", "", "", time.Time{}, err
+	}
+	return user, aud, p[3], exp, nil
+}
+
+// Seen remembers single-use values (ticket nonces) until they expire.
+type Seen struct {
+	mu sync.Mutex
+	m  map[string]time.Time
+}
+
+// Mark records nonce and reports whether it was new (false = replay).
+func (s *Seen) Mark(nonce string, exp time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.m == nil {
+		s.m = map[string]time.Time{}
+	}
+	now := time.Now()
+	for k, e := range s.m {
+		if now.After(e) {
+			delete(s.m, k)
+		}
+	}
+	if _, dup := s.m[nonce]; dup {
+		return false
+	}
+	s.m[nonce] = exp
+	return true
 }
 
 // Ceremonies keeps WebAuthn ceremony data in memory (single use, short TTL).

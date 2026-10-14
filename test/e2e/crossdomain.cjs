@@ -95,13 +95,14 @@ const raw = (host, urlPath, headers = {}) => new Promise((res, rej) => http.get(
 
     // a ticket is bound to the host it was issued for
     const authCookie = (await ctx.cookies()).find((c) => c.name === "wap_session" && c.domain === "auth.test.local");
-    const sso = await raw("auth.test.local:8000", "/_wap/sso?next=" + encodeURIComponent("http://a.siteone.test:8000/p"), { Cookie: `wap_session=${authCookie.value}` });
-    const fresh = new URL(sso.headers.location);
-    assert.equal(fresh.host, "a.siteone.test:8000");
-    const ticketPath = fresh.pathname + fresh.search;
-    assert.equal((await raw("b.sitetwo.test:8000", ticketPath)).status, 403);
-    assert.equal((await raw("a.siteone.test:8000", ticketPath)).status, 302);
-    step("a fresh ticket is refused on another site and accepted on the site it was issued for");
+    const issue = async () => new URL((await raw("auth.test.local:8000", "/_wap/sso?next=" + encodeURIComponent("http://a.siteone.test:8000/p"), { Cookie: `wap_session=${authCookie.value}` })).headers.location);
+    const t1 = await issue(); assert.equal(t1.host, "a.siteone.test:8000");
+    assert.equal((await raw("b.sitetwo.test:8000", t1.pathname + t1.search)).status, 403);
+    assert.equal((await raw("a.siteone.test:8000", t1.pathname + t1.search)).status, 403);   // presenting it elsewhere burnt it
+    const t2 = await issue();
+    assert.equal((await raw("a.siteone.test:8000", t2.pathname + t2.search)).status, 302);
+    assert.equal((await raw("a.siteone.test:8000", t2.pathname + t2.search)).status, 403);   // single use
+    step("a ticket is refused on another site (and burnt), accepted once on its own site");
 
     // the post-login redirect cannot leave the allowed hosts
     await page.goto("http://auth.test.local:8000/_wap/login?next=" + encodeURIComponent("https://evil.example/steal"));
@@ -109,13 +110,13 @@ const raw = (host, urlPath, headers = {}) => new Promise((res, rej) => http.get(
     await page.waitForURL("http://auth.test.local:8000/");
     step("a next= pointing outside ALLOWED_HOSTS is ignored (open redirect refused)");
 
-    // sign out everywhere: a copied site cookie stops working at once
+    // sign out of this browser: a copied site cookie opened from that login stops working at once
     const copied = { Accept: "application/json", Cookie: `wap_session=${one.value}` };
     assert.equal((await raw("a.siteone.test:8000", "/", copied)).status, 200);
     await page.goto("http://auth.test.local:8000/");   // login host home page, with its sign-out form (POST)
-    await Promise.all([page.waitForURL(/\/_wap\/login/), page.click("button")]);
+    await Promise.all([page.waitForURL(/\/_wap\/login/), page.click("button >> nth=0")]);
     assert.equal((await raw("a.siteone.test:8000", "/", copied)).status, 401);
-    step("signing out on the login host revokes the cookies already issued to sites");
+    step("signing out on the login host revokes the site sessions opened from it, even a copied cookie");
 
     await page.goto("http://a.siteone.test:8000/_wap/logout");
     assert.ok(!(await ctx.cookies("http://a.siteone.test:8000")).some((c) => c.name === "wap_session" && c.value));

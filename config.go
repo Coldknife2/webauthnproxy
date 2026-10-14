@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"net/url"
@@ -27,7 +28,6 @@ type Config struct {
 	RPName        string        // RP_NAME
 	RPOrigins     []string      // RP_ORIGINS: allowed origins (e.g. https://app.example.com)
 	DataDir       string        // DATA_DIR
-	SessionSecret []byte        // SESSION_SECRET (otherwise generated and stored in DATA_DIR)
 	SessionTTL    time.Duration // SESSION_TTL
 	PreserveHost  bool          // PRESERVE_HOST: forward the client's Host to the upstream
 	UserHeader    string        // USER_HEADER: header carrying the user name to the upstream
@@ -36,7 +36,7 @@ type Config struct {
 	CookieSecure    string         // COOKIE_SECURE: "auto" (default), "true" or "false"
 	RateLimitIP     RateSpec       // RATE_LIMIT_IP: login/enrollment requests per client address (default 20/1m)
 	RateLimitGlobal RateSpec       // RATE_LIMIT_GLOBAL: login/enrollment requests in total (default 200/1m)
-	SessionPrevious [][]byte       // SESSION_SECRET_PREVIOUS: former signing keys still accepted (rotation)
+	SessionBind     Binding        // SESSION_BIND: "ua", "ip" or "ua,ip": tie a session to the browser's User-Agent and/or address (default none)
 	IdleTimeout     time.Duration  // SESSION_IDLE_TIMEOUT: sign out after this long without activity (0 = off)
 	AuditLog        bool           // AUDIT_LOG: JSON audit events on standard output (default on)
 }
@@ -162,18 +162,20 @@ func LoadConfig() (*Config, error) {
 	}
 	c.SessionTTL = ttl
 
-	if s := os.Getenv("SESSION_SECRET"); s != "" {
-		if len(s) < 32 {
-			return nil, fmt.Errorf("SESSION_SECRET too short (32 characters minimum, e.g. openssl rand -base64 48)")
+	for _, v := range []string{"SESSION_SECRET", "SESSION_SECRET_PREVIOUS"} {
+		if os.Getenv(v) != "" {
+			log.Printf("%s is ignored: sessions are stored on the server and no longer signed (see docs/security.md)", v)
 		}
-		c.SessionSecret = []byte(s)
 	}
-	for _, k := range strings.Split(os.Getenv("SESSION_SECRET_PREVIOUS"), ",") {
-		if k = strings.TrimSpace(k); k != "" {
-			if len(k) < 32 {
-				return nil, fmt.Errorf("SESSION_SECRET_PREVIOUS: every key needs 32 characters minimum")
-			}
-			c.SessionPrevious = append(c.SessionPrevious, []byte(k))
+	for _, b := range strings.Split(strings.ToLower(os.Getenv("SESSION_BIND")), ",") {
+		switch strings.TrimSpace(b) {
+		case "":
+		case "ua":
+			c.SessionBind.UA = true
+		case "ip":
+			c.SessionBind.IP = true
+		default:
+			return nil, fmt.Errorf("invalid SESSION_BIND %q (ua, ip or ua,ip)", b)
 		}
 	}
 

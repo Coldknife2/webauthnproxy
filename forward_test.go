@@ -88,7 +88,7 @@ func TestForwardCrossDomainFlow(t *testing.T) {
 	}
 
 	// 3. signed in on the login host: sso hands the user over with a ticket for that host only
-	loginCookie := a.sessions.New("remi", "", 0)
+	loginCookie := mk(a, "remi", "")
 	r := httptest.NewRequest("GET", "/_wap/sso?next="+url.QueryEscape("https://anysite.com/page?x=1"), nil)
 	r.Header.Set("Cookie", cookieName+"="+loginCookie)
 	sw := httptest.NewRecorder()
@@ -157,7 +157,7 @@ func TestForwardNonBrowserGets401AndDeletedUserLosesAccess(t *testing.T) {
 	if w.Code != 401 {
 		t.Fatalf("non-browser anonymous: %d", w.Code)
 	}
-	site := a.sessions.New("remi", "anysite.com", 0)
+	site := mk(a, "remi", "anysite.com")
 	if w := verifyReq(a, "anysite.com", "/", site); w.Code != 200 {
 		t.Fatalf("valid: %d", w.Code)
 	}
@@ -173,7 +173,7 @@ func TestSharedCookieDomainStillWorks(t *testing.T) {
 	a := forwardApp(t)
 	a.cfg.CookieDomain = "example.com"
 	addUser(t, a)
-	shared := a.sessions.New("remi", "", 0)
+	shared := mk(a, "remi", "")
 	if w := verifyReq(a, "app.example.com", "/", shared); w.Code != 200 {
 		t.Fatalf("shared cookie inside the cookie domain: %d", w.Code)
 	}
@@ -191,7 +191,8 @@ func TestCallbackNeverRedirectsOffSite(t *testing.T) {
 	a := forwardApp(t)
 	addUser(t, a)
 	for _, next := range []string{"//evil.com/x", `/\evil.com`, "https://evil.com/", "javascript:alert(1)", "http://anysite.com@evil.com/", ""} {
-		ticket := a.sessions.NewTicket("remi", "anysite.com", 0)
+		login, _ := a.sessions.Lookup(mk(a, "remi", ""), "", "")
+		ticket := a.sessions.NewTicket("remi", "anysite.com", login.Handle())
 		w := verifyReq(a, "anysite.com", "/_wap/callback?ticket="+url.QueryEscape(ticket)+"&next="+url.QueryEscape(next), "")
 		if w.Code != 302 || w.Header().Get("Location") != "https://anysite.com/" {
 			t.Errorf("next=%q -> %d %q, want a redirect to the site root", next, w.Code, w.Header().Get("Location"))
@@ -209,13 +210,13 @@ func mustTrust(s string) []netip.Prefix {
 
 // ---- single use of cross-domain tickets: what is guaranteed, and where ----
 //
-// A ticket is a signed token, so "single use" comes from an in-memory set of nonces (App.seen). Three cases:
-// replay in the same process (refused), replay after a restart, and redemption on a second instance.
+// A ticket is a random value held in the memory of the process that issued it and removed on first presentation.
+// Cases: replay in the same process, replay after a restart, redemption on a second instance, wrong site.
 
 // issueTicket runs the sso step and returns the callback query holding a ticket for anysite.com.
 func issueTicket(t *testing.T, a *App) string {
 	t.Helper()
-	cookie := a.sessions.New("remi", "", 0)
+	cookie := mk(a, "remi", "")
 	r := httptest.NewRequest("GET", "/_wap/sso?next="+url.QueryEscape("https://anysite.com/page"), nil)
 	r.Header.Set("Cookie", cookieName+"="+cookie)
 	w := httptest.NewRecorder()
@@ -227,13 +228,13 @@ func issueTicket(t *testing.T, a *App) string {
 	return cb.RawQuery
 }
 
-// restarted builds a second App with the same database and signing keys but empty memory, as a restarted
-// container (or a second instance sharing the same configuration) would be.
+// restarted builds a second App sharing the database and the data directory (so persisted sessions) but with empty
+// memory, as a restarted container would be; with sameDir=false it is an independent instance with its own table.
 func restarted(t *testing.T, a *App) *App {
 	t.Helper()
 	b := forwardApp(t)
 	b.store = a.store
-	b.sessions = NewSessions(a.sessions.keys[0], a.sessions.keys[1:], a.cfg.SessionTTL, 0)
+	b.sessions = mustSessions(t, a.sessions.path[:len(a.sessions.path)-len("sessions.json")], a.cfg.SessionTTL, 0, Binding{})
 	return b
 }
 
@@ -250,30 +251,40 @@ func TestTicketReplaySameProcess(t *testing.T) {
 }
 
 func TestTicketReplayAfterRestartRefused(t *testing.T) {
-	a := forwardApp(t)
-	addUser(t, a)
+	a := durableApp(t)
 	q := issueTicket(t, a)
 	if w := verifyReq(a, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 302 {
 		t.Fatalf("first use: %d", w.Code)
 	}
-	// the nonce set is gone after a restart; the ticket is still within its 60 s and correctly signed
+	// tickets live in memory only: after a restart the used ticket is simply unknown
 	b := restarted(t, a)
 	if w := verifyReq(b, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 403 {
 		t.Fatalf("a ticket used before the restart works again: %d", w.Code)
 	}
 	// an unused ticket does not survive the restart either (the user simply signs in again)
-	a2 := forwardApp(t)
-	addUser(t, a2)
-	q2 := issueTicket(t, a2)
-	if w := verifyReq(restarted(t, a2), "anysite.com", "/_wap/callback?"+q2, ""); w.Code != 403 {
+	c := durableApp(t)
+	q2 := issueTicket(t, c)
+	if w := verifyReq(restarted(t, c), "anysite.com", "/_wap/callback?"+q2, ""); w.Code != 403 {
 		t.Fatalf("a ticket from an earlier run was accepted: %d", w.Code)
 	}
 }
 
+func TestSessionsSurviveRestartButTicketsDoNot(t *testing.T) {
+	a := durableApp(t)
+	login, site := loginAndSite(t, a)
+	b := restarted(t, a)
+	if w := verifyReq(b, "anysite.com", "/", site); w.Code != 200 {
+		t.Fatalf("a site session did not survive the restart: %d", w.Code)
+	}
+	if _, ok := b.currentUser(requestWithCookie(login)); !ok {
+		t.Fatal("the login session did not survive the restart")
+	}
+}
+
 func TestTicketTwoInstances(t *testing.T) {
-	a := forwardApp(t)
-	addUser(t, a)
-	b := restarted(t, a) // second instance: same keys, same database, separate memory
+	a := durableApp(t)
+	b := durableApp(t) // second instance: its own memory, even with the same users
+	b.store = a.store
 	q := issueTicket(t, a)
 	// redeemed on the other instance: refused (so a ticket cannot be spent once on each instance)
 	if w := verifyReq(b, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 403 {
@@ -288,11 +299,33 @@ func TestTicketTwoInstances(t *testing.T) {
 	}
 }
 
-func TestTicketForgedBootRefused(t *testing.T) {
+func TestTicketForTheWrongSiteIsRefusedAndBurnt(t *testing.T) {
 	a := forwardApp(t)
-	// a validly signed ticket without the boot identifier (e.g. from an older version) is refused
-	old := a.sessions.token("t", "remi", "anysite.com", time.Now().Add(time.Minute), 0, "AAAAAAAAAAAAAAAAAAAAAA")
-	if w := verifyReq(a, "anysite.com", "/_wap/callback?ticket="+url.QueryEscape(old), ""); w.Code != 403 {
-		t.Fatalf("ticket without boot id accepted: %d", w.Code)
+	addUser(t, a)
+	q := issueTicket(t, a)
+	if w := verifyReq(a, "other.org", "/_wap/callback?"+q, ""); w.Code != 403 {
+		t.Fatalf("ticket accepted on another site: %d", w.Code)
 	}
+	if w := verifyReq(a, "anysite.com", "/_wap/callback?"+q, ""); w.Code != 403 {
+		t.Fatalf("a ticket presented on the wrong site stayed usable: %d", w.Code)
+	}
+}
+
+func TestForgedTicketRefused(t *testing.T) {
+	a := forwardApp(t)
+	addUser(t, a)
+	for _, tk := range []string{"", "remi", strings.Repeat("A", 43), mk(a, "remi", "anysite.com")} {
+		if w := verifyReq(a, "anysite.com", "/_wap/callback?ticket="+url.QueryEscape(tk), ""); w.Code != 403 {
+			t.Errorf("ticket %q accepted: %d", tk, w.Code)
+		}
+	}
+}
+
+// durableApp is a forward-mode app with one user whose sessions are saved to disk.
+func durableApp(t *testing.T) *App {
+	t.Helper()
+	a := forwardApp(t)
+	addUser(t, a)
+	a.sessions = mustSessions(t, t.TempDir(), a.cfg.SessionTTL, 0, Binding{})
+	return a
 }

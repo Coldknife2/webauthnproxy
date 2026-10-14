@@ -5,22 +5,52 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/go-webauthn/webauthn/webauthn"
 )
 
-func postLogout(a *App, cookie string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest("POST", "/_wap/logout", nil)
+func postLogout(a *App, cookie string, query ...string) *httptest.ResponseRecorder {
+	target := "/_wap/logout"
+	if len(query) > 0 {
+		target += "?" + query[0]
+	}
+	r := httptest.NewRequest("POST", target, nil)
 	r.Header.Set("Cookie", cookieName+"="+cookie)
 	w := httptest.NewRecorder()
 	a.publicHandler().ServeHTTP(w, r)
 	return w
 }
 
-func TestLogoutRevokesEverySession(t *testing.T) {
+// login opens a login-host session and, through the ticket exchange, a session on anysite.com. It returns both cookies.
+func loginAndSite(t *testing.T, a *App) (login, site string) {
+	t.Helper()
+	login = mk(a, "remi", "")
+	r := httptest.NewRequest("GET", "/_wap/sso?next="+url.QueryEscape("https://anysite.com/p"), nil)
+	r.Header.Set("Cookie", cookieName+"="+login)
+	w := httptest.NewRecorder()
+	a.publicHandler().ServeHTTP(w, r)
+	cb, err := url.Parse(w.Header().Get("Location"))
+	if err != nil || w.Code != 302 {
+		t.Fatalf("sso: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	cw := verifyReq(a, "anysite.com", "/_wap/callback?"+cb.RawQuery, "")
+	for _, c := range cw.Result().Cookies() {
+		if c.Name == cookieName {
+			site = c.Value
+		}
+	}
+	if site == "" {
+		t.Fatalf("callback set no cookie: %d", cw.Code)
+	}
+	return login, site
+}
+
+func TestLogoutEndsThisBrowserOnly(t *testing.T) {
 	a := forwardApp(t)
 	addUser(t, a)
-	login := a.sessions.New("remi", "", 0)
-	site := a.sessions.New("remi", "anysite.com", 0) // a site cookie issued earlier, e.g. on another device
+	login, site := loginAndSite(t, a)
+	otherDevice := mk(a, "remi", "")
+	otherSite := mk(a, "remi", "anysite.com")
 	if w := verifyReq(a, "anysite.com", "/", site); w.Code != 200 {
 		t.Fatalf("before logout: %d", w.Code)
 	}
@@ -28,44 +58,50 @@ func TestLogoutRevokesEverySession(t *testing.T) {
 	if w := postLogout(a, login); w.Code != 303 {
 		t.Fatalf("logout: %d", w.Code)
 	}
-	// both the login cookie and the previously issued site cookie are dead, even though neither expired
 	if w := verifyReq(a, "anysite.com", "/", site); w.Code != 302 {
-		t.Fatalf("copied site cookie still valid after logout: %d", w.Code)
+		t.Fatalf("the site session opened from this login survived the logout: %d", w.Code)
 	}
 	if _, ok := a.currentUser(requestWithCookie(login)); ok {
 		t.Fatal("login cookie still valid after logout")
 	}
-	// signing in again yields a working session under the new generation
-	gen, _ := a.store.Gen("remi")
-	if gen != 1 {
-		t.Fatalf("generation = %d, want 1", gen)
+	// another device is not signed out by a logout elsewhere
+	if _, ok := a.currentUser(requestWithCookie(otherDevice)); !ok {
+		t.Fatal("logout signed out another device")
 	}
-	if w := verifyReq(a, "anysite.com", "/", a.sessions.New("remi", "anysite.com", gen)); w.Code != 200 {
-		t.Fatalf("fresh session: %d", w.Code)
+	if w := verifyReq(a, "anysite.com", "/", otherSite); w.Code != 200 {
+		t.Fatalf("another device's site session was revoked: %d", w.Code)
 	}
 }
 
-func TestRevocationSurvivesRestart(t *testing.T) {
-	a := testApp(t)
+func TestLogoutOfAllDevices(t *testing.T) {
+	a := forwardApp(t)
 	addUser(t, a)
-	if err := a.store.Revoke("remi"); err != nil {
-		t.Fatal(err)
+	login, site := loginAndSite(t, a)
+	otherDevice := mk(a, "remi", "")
+	_ = a.store.AddCredential(a.store.GetOrNew("ana"), &webauthn.Credential{ID: []byte("ana-c")})
+	other := mk(a, "ana", "")
+	if w := postLogout(a, login, "all=1"); w.Code != 303 {
+		t.Fatalf("logout: %d", w.Code)
 	}
-	reopened, err := OpenStore(a.store.dir())
-	if err != nil {
-		t.Fatal(err)
+	for name, c := range map[string]string{"login": login, "device 2": otherDevice} {
+		if _, ok := a.currentUser(requestWithCookie(c)); ok {
+			t.Errorf("%s still signed in", name)
+		}
 	}
-	if gen, ok := reopened.Gen("remi"); !ok || gen != 1 {
-		t.Fatalf("generation after reload = %d (%v), want 1", gen, ok)
+	if w := verifyReq(a, "anysite.com", "/", site); w.Code == 200 {
+		t.Error("site session survived the sign-out of all devices")
+	}
+	if _, ok := a.sessions.Lookup(other, "", ""); !ok {
+		t.Error("another user was signed out")
 	}
 }
 
 func TestSiteLogoutRevokesOnlyOnPost(t *testing.T) {
 	a := forwardApp(t)
 	addUser(t, a)
-	site := a.sessions.New("remi", "anysite.com", 0)
+	login, site := loginAndSite(t, a)
 
-	get := func(method string) int {
+	call := func(method string) int {
 		r := httptest.NewRequest("GET", "/_wap/verify", nil)
 		r.Header.Set("X-Forwarded-Host", "anysite.com")
 		r.Header.Set("X-Forwarded-Uri", "/_wap/logout")
@@ -75,56 +111,97 @@ func TestSiteLogoutRevokesOnlyOnPost(t *testing.T) {
 		a.publicHandler().ServeHTTP(w, r)
 		return w.Code
 	}
-	if c := get("GET"); c != 302 {
+	if c := call("GET"); c != 302 {
 		t.Fatalf("GET logout: %d", c)
 	}
 	if w := verifyReq(a, "anysite.com", "/", site); w.Code != 200 {
-		t.Fatal("a GET (CSRF-able) must not sign the user out everywhere")
+		t.Fatal("a GET (CSRF-able) must not sign the user out")
 	}
-	if c := get("POST"); c != 302 {
+	if c := call("POST"); c != 302 {
 		t.Fatalf("POST logout: %d", c)
 	}
 	if w := verifyReq(a, "anysite.com", "/", site); w.Code == 200 {
 		t.Fatal("POST logout did not revoke the session")
+	}
+	if _, ok := a.currentUser(requestWithCookie(login)); ok {
+		t.Fatal("signing out of a site left the login session open")
 	}
 }
 
 func TestTicketIssuedBeforeLogoutIsRefused(t *testing.T) {
 	a := forwardApp(t)
 	addUser(t, a)
-	ticket := a.sessions.NewTicket("remi", "anysite.com", 0)
-	if err := a.store.Revoke("remi"); err != nil {
+	login := mk(a, "remi", "")
+	r := httptest.NewRequest("GET", "/_wap/sso?next="+url.QueryEscape("https://anysite.com/p"), nil)
+	r.Header.Set("Cookie", cookieName+"="+login)
+	w := httptest.NewRecorder()
+	a.publicHandler().ServeHTTP(w, r)
+	cb, _ := url.Parse(w.Header().Get("Location"))
+	postLogout(a, login, "all=1") // the user signs out before the browser reaches the site
+	if w := verifyReq(a, "anysite.com", "/_wap/callback?"+cb.RawQuery, ""); w.Code != 403 {
+		t.Fatalf("a ticket from a session that has ended was accepted: %d", w.Code)
+	}
+}
+
+func TestDeletedUserLosesTheirSessions(t *testing.T) {
+	a := testApp(t)
+	cookie := addUser(t, a)
+	if _, ok := a.sessionFor(requestWithCookie(cookie)); !ok {
+		t.Fatal("setup")
+	}
+	if err := a.store.DeleteCredential(a.store.ByName("remi").ID, []byte("c1")); err != nil {
 		t.Fatal(err)
 	}
-	if w := verifyReq(a, "anysite.com", "/_wap/callback?ticket="+url.QueryEscape(ticket), ""); w.Code != 403 {
-		t.Fatalf("stale ticket accepted: %d", w.Code)
+	if _, ok := a.sessionFor(requestWithCookie(cookie)); ok {
+		t.Fatal("a session of a user that no longer exists is still accepted")
 	}
 }
 
-func TestTokenTamperingIsDetected(t *testing.T) {
-	s := NewSessions([]byte("0123456789abcdef0123456789abcdef"), nil, time.Hour, 0)
-	tok := s.New("remi", "", 0)
-	parts := strings.Split(tok, ".")
-	forged := append([]string{b64.EncodeToString([]byte("admin"))}, parts[1:]...) // other user, same signature
-	if _, _, _, err := s.Verify(strings.Join(forged, ".")); err == nil {
-		t.Fatal("forged user accepted")
+func TestForgedAndModifiedCookiesAreRefused(t *testing.T) {
+	a := forwardApp(t)
+	addUser(t, a)
+	good := mk(a, "remi", "anysite.com")
+	for name, c := range map[string]string{
+		"a user name":         "remi",
+		"a guessed value":     strings.Repeat("A", 43),
+		"modified last char":  good[:len(good)-1] + "B",
+		"modified first char": "B" + good[1:],
+		"old signed format":   "cmVtaQ.YW55c2l0ZS5jb20.2000000000.0.2000000000.c2ln",
+		"another site's":      mk(a, "remi", "other.org"),
+	} {
+		if c == good {
+			continue
+		}
+		if w := verifyReq(a, "anysite.com", "/", c); w.Code == 200 {
+			t.Errorf("%s accepted", name)
+		}
 	}
-	parts[3] = "9" // other generation, same signature
-	if _, _, _, err := s.Verify(strings.Join(parts, ".")); err == nil {
-		t.Fatal("forged generation accepted")
+	if w := verifyReq(a, "anysite.com", "/", good); w.Code != 200 {
+		t.Fatalf("the genuine cookie was refused: %d", w.Code)
 	}
 }
 
-func TestSessionSecretMinimumLength(t *testing.T) {
+func TestSessionSecretIsIgnoredNotRequired(t *testing.T) {
 	t.Setenv("UPSTREAM", "http://localhost:3000")
 	t.Setenv("RP_ID", "localhost")
 	t.Setenv("RP_ORIGINS", "http://localhost:8080")
 	t.Setenv("SESSION_SECRET", "too-short-secret")
-	if _, err := LoadConfig(); err == nil {
-		t.Fatal("short SESSION_SECRET accepted")
-	}
-	t.Setenv("SESSION_SECRET", strings.Repeat("x", 32))
+	t.Setenv("SESSION_SECRET_PREVIOUS", "x")
 	if _, err := LoadConfig(); err != nil {
-		t.Fatalf("32-character secret refused: %v", err)
+		t.Fatalf("a leftover SESSION_SECRET stops the start: %v", err)
+	}
+}
+
+func TestSessionBindConfig(t *testing.T) {
+	t.Setenv("UPSTREAM", "http://localhost:3000")
+	t.Setenv("RP_ID", "localhost")
+	t.Setenv("RP_ORIGINS", "http://localhost:8080")
+	t.Setenv("SESSION_BIND", "ua, ip")
+	if c, err := LoadConfig(); err != nil || !c.SessionBind.UA || !c.SessionBind.IP {
+		t.Fatalf("ua,ip: %v %+v", err, c)
+	}
+	t.Setenv("SESSION_BIND", "device")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("unknown binding accepted")
 	}
 }

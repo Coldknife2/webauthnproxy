@@ -84,7 +84,7 @@ func TestSchemeAndSecureCookieIgnoreForgedProto(t *testing.T) {
 func TestVerifyRefusesAnUntrustedCaller(t *testing.T) {
 	a := forwardApp(t)
 	addUser(t, a)
-	cookie := a.sessions.New("remi", "anysite.com", 0)
+	cookie := mk(a, "remi", "anysite.com")
 	forged := func(peer string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", "/_wap/verify", nil)
 		r.RemoteAddr = peer

@@ -66,7 +66,7 @@ func TestAdminListPasskeys(t *testing.T) {
 
 func TestAdminRevokeEndsSessionsAndAudits(t *testing.T) {
 	a, dir, logs := adminSetup(t)
-	cookie := a.sessions.New("remi", "", mustGen(t, a, "remi"))
+	cookie := mk(a, "remi", "")
 	out, err := cli(dir, "passkeys", "revoke", tagOf("remi-phone-credential")[:8]) // a prefix is enough
 	if err != nil || !strings.Contains(out, "remi") {
 		t.Fatalf("revoke: %q %v", out, err)
@@ -74,22 +74,13 @@ func TestAdminRevokeEndsSessionsAndAudits(t *testing.T) {
 	if n := len(a.store.ByName("remi").Credentials); n != 1 {
 		t.Fatalf("remi has %d passkeys left, want 1", n)
 	}
-	// the cookie issued before is refused (generation bumped)
-	if _, _, gen, err := a.sessions.Verify(cookie); err != nil || gen == mustGen(t, a, "remi") {
-		t.Fatalf("the old session is still valid: gen=%d err=%v", gen, err)
+	// sessions are not tied to one passkey: the user's open sessions end with the revocation
+	if _, ok := a.sessions.Lookup(cookie, "", ""); ok {
+		t.Fatal("the old session is still valid")
 	}
 	if !strings.Contains(logs.String(), `"event":"credential_deleted"`) || !strings.Contains(logs.String(), `"via":"cli"`) {
 		t.Errorf("no audit event: %s", logs.String())
 	}
-}
-
-func mustGen(t *testing.T, a *App, name string) int64 {
-	t.Helper()
-	g, ok := a.store.Gen(name)
-	if !ok {
-		t.Fatal("no user", name)
-	}
-	return g
 }
 
 func TestAdminRevokeRefusals(t *testing.T) {
@@ -134,14 +125,14 @@ func TestAdminRefusesToDeleteTheLastPasskey(t *testing.T) {
 
 func TestAdminSignOut(t *testing.T) {
 	a, dir, logs := adminSetup(t)
-	before := mustGen(t, a, "ana")
+	ana, remi := mk(a, "ana", ""), mk(a, "remi", "")
 	if _, err := cli(dir, "signout", "ana"); err != nil {
 		t.Fatal(err)
 	}
-	if mustGen(t, a, "ana") != before+1 {
-		t.Fatal("generation not bumped")
+	if _, ok := a.sessions.Lookup(ana, "", ""); ok {
+		t.Fatal("ana is still signed in")
 	}
-	if mustGen(t, a, "remi") != 0 {
+	if _, ok := a.sessions.Lookup(remi, "", ""); !ok {
 		t.Fatal("another user was signed out")
 	}
 	if !strings.Contains(logs.String(), `"event":"sign_out"`) {
@@ -158,6 +149,7 @@ func TestAdminSocketIsPrivateAndNotOnTheNetwork(t *testing.T) {
 	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("socket mode %v, want 0600", st.Mode().Perm())
 	}
+	remiSession := mk(a, "remi", "")
 	// none of the HTTP handlers served to the network carries the admin routes
 	a.cfg.Mode = "forward"
 	a.cfg.TrustedProxies = mustTrust("192.0.2.0/24")
@@ -169,7 +161,7 @@ func TestAdminSocketIsPrivateAndNotOnTheNetwork(t *testing.T) {
 			}
 		}
 	}
-	if a.store.CredentialCount() != 3 || mustGen(t, a, "remi") != 0 {
+	if a.store.CredentialCount() != 3 || !sessionAlive(a, remiSession) {
 		t.Fatal("a network handler changed the data")
 	}
 }
@@ -243,5 +235,41 @@ func TestRunCLIIgnoresOrdinaryStart(t *testing.T) {
 	}
 	if handled, _ := runCLI([]string{"--version"}, t.TempDir(), &bytes.Buffer{}); handled {
 		t.Fatal("--version is handled elsewhere")
+	}
+}
+
+func sessionAlive(a *App, cookie string) bool { _, ok := a.sessions.Lookup(cookie, "", ""); return ok }
+
+func TestAdminSessions(t *testing.T) {
+	a, dir, logs := adminSetup(t)
+	one := a.sessions.Create("remi", "", "", "Mozilla/5.0 (X11; Linux) Firefox/141.0", "")
+	two := a.sessions.Create("remi", "anysite.com", "", "", "")
+	out, err := cli(dir, "sessions", "list")
+	if err != nil || !strings.Contains(out, "user=remi") || !strings.Contains(out, "(login host)") ||
+		!strings.Contains(out, "anysite.com") || !strings.Contains(out, "Firefox/141.0") {
+		t.Fatalf("list: %q %v", out, err)
+	}
+	for _, secret := range []string{one, two} {
+		if strings.Contains(out, secret) {
+			t.Fatal("the listing printed a cookie value")
+		}
+	}
+	se, _ := a.sessions.Lookup(one, "", "")
+	if _, err := cli(dir, "sessions", "revoke", se.ID[:8]); err != nil {
+		t.Fatal(err)
+	}
+	if sessionAlive(a, one) || !sessionAlive(a, two) {
+		t.Fatal("revoke removed the wrong session")
+	}
+	if !strings.Contains(logs.String(), `"event":"session_revoked"`) {
+		t.Error("no audit event")
+	}
+	for name, args := range map[string][]string{"unknown": {"sessions", "revoke", "zzzzzzzz"}, "too short": {"sessions", "revoke", "ab"}, "usage": {"sessions", "revoke"}} {
+		if _, err := cli(dir, args...); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+	if !sessionAlive(a, two) {
+		t.Fatal("a refused command revoked a session")
 	}
 }

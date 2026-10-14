@@ -44,6 +44,9 @@ jobs:
       - name: e2e proxy + enrollment + static tool
         working-directory: test/e2e
         run: npm run test:proxy
+      - name: e2e rate limiting
+        working-directory: test/e2e
+        run: npm run test:ratelimit
       - name: e2e forwardAuth (Traefik)
         working-directory: test/e2e
         env:
@@ -54,6 +57,13 @@ jobs:
         env:
           RUNTIME: docker
         run: npm run test:crossdomain
+      - name: build the image the examples run
+        run: docker build --build-arg VERSION=ci -t localhost/webauthnproxy:examples .
+      - name: the two complete examples (examples/)
+        working-directory: test/e2e
+        env:
+          RUNTIME: docker
+        run: node ../examples/run.cjs
 
   image:
     # Builds the image on every run; pushes it to the registries only on pushes to main and on v* tags,

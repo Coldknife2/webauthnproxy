@@ -27,6 +27,13 @@ func main() {
 		fmt.Println("webauthnproxy", version)
 		return
 	}
+	if handled, err := runCLI(os.Args[1:], getenv("DATA_DIR", "/data"), os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	log.Printf("webauthnproxy %s", version)
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -78,6 +85,12 @@ func main() {
 		ipLimit:     NewLimiter(cfg.RateLimitIP),
 		globalLimit: NewLimiter(cfg.RateLimitGlobal),
 	}
+
+	admin, err := listenAdmin(cfg.DataDir, app.adminHandler())
+	if err != nil {
+		log.Fatalf("admin socket: %v", err)
+	}
+	defer admin.Close()
 
 	servers := []*http.Server{{Addr: cfg.Listen, Handler: app.publicHandler()}}
 	if cfg.EnrollEnabled {

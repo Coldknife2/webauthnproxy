@@ -100,6 +100,10 @@ func (a *App) publicHandler() http.Handler {
 	mux.Handle("POST "+prefix+"/login/begin", a.limited(a.loginBegin))
 	mux.Handle("POST "+prefix+"/login/finish", a.limited(a.loginFinish))
 	mux.HandleFunc("POST "+prefix+"/logout", a.logout)
+	mux.HandleFunc("GET "+prefix+"/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte("ok\n"))
+	})
 	if a.cfg.Mode == "forward" {
 		mux.HandleFunc(prefix+"/verify", a.verify)
 		mux.HandleFunc("GET "+prefix+"/sso", a.sso)

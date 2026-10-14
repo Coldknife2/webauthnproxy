@@ -34,3 +34,18 @@ Everything is set through environment variables.
 | `USER_HEADER` | `X-Authenticated-User` | Header carrying the user |
 
 Ports: only `8080` is meant to be reached by the public (through Traefik). **Never expose `8081` or `8082`**: loopback or a private network, and only while you enroll ([reverse-proxy.md](reverse-proxy.md)).
+
+## Commands
+
+`webauthnproxy` without argument starts the service. With an argument it is a client of the running service (same `DATA_DIR`):
+
+| Command | |
+|---|---|
+| `passkeys list` | one line per passkey: short id, user, `synced`/`device-bound`, transports, uses |
+| `passkeys revoke <id>` | delete a passkey and end its user's sessions; refuses the last passkey ([enrollment.md](enrollment.md#listing-and-revoking-passkeys)) |
+| `signout <user>` | end every session of a user, keep the passkeys |
+| `healthcheck` | exit status 0 when `GET /_wap/healthz` on `LISTEN` answers `200`; this is the image's `HEALTHCHECK` (no shell or curl in the image) |
+| `--version` | print the version |
+
+Run them in the container: `docker exec webauthnproxy /webauthnproxy passkeys list`.
+`DATA_DIR/admin.sock` (mode `0600`) is the Unix socket they use ([security.md](security.md#local-administration-socket)).

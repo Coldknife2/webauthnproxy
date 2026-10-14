@@ -66,6 +66,7 @@ const until = async (f, ms = 15000) => { const t = Date.now(); while (Date.now()
     // with addAuthCookiesToResponse); without activity the session ends. No server-side state is involved.
     const sess = async () => (await ctx.cookies()).find((c) => c.name === "wap_session" && c.value)?.value;
     const body = async () => { await page.goto("http://app.test.local:8000/page"); return page.textContent("body"); };
+    assert.match(await body(), /SECRET user=remi/);   // fresh activity right before the timed part (the steps above can take seconds)
     const v0 = await sess();
     await page.waitForTimeout(4000); assert.match(await body(), /SECRET user=remi/);
     const v1 = await sess(); assert.notEqual(v1, v0, "the cookie was not renewed");

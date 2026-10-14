@@ -55,6 +55,24 @@ public key, consistent credential ID, user ID consistent with the name, no dupli
 The `import/` folder is watched continuously: **only someone who can write to the data volume can add a passkey this way**.
 To add a second device to a user, run the tool again with the **same name**.
 
+## Listing and revoking passkeys
+
+Without editing `users.json` and without opening port 8081, from the host that runs the container:
+
+```sh
+docker exec webauthnproxy /webauthnproxy passkeys list
+docker exec webauthnproxy /webauthnproxy passkeys revoke <id>     # <id>: the tag shown by "list" (a prefix of 6+ characters is enough)
+docker exec webauthnproxy /webauthnproxy signout <user>           # end every session of a user, keep the passkeys
+```
+
+(`podman exec` works the same.) `list` prints one line per passkey: short id, user, `synced` or `device-bound`, transports, number of uses.
+`revoke` deletes the passkey **and ends every session of its user** (they sign in again with another passkey). It refuses to delete the **last** passkey of the service, an unknown or ambiguous id, and ids shorter than 6 characters.
+Each action is written to the audit log with `"via":"cli"`.
+
+How it works: the running service listens on a Unix socket, `DATA_DIR/admin.sock`, created with mode `0600`, and the command talks to it. Nothing is added to the network;
+whoever can open that socket can already write to the data volume, which is the trust level this project assumes for recovery and import.
+The command needs the service to be running with the same `DATA_DIR`. The enrolment page (port 8081) can also list and delete passkeys.
+
 ## Account recovery (lost passkeys)
 
 **There is no remote recovery by design**: no e-mail, no SMS, no recovery code. Whoever can write to the data volume can recover; nobody else can.
@@ -75,4 +93,4 @@ Alternative without opening port 8081: create a passkey with the static tool on 
 
 **Same caution when restoring a backup of `users.json`:** a copy older than a sign-out contains the older session generation, so cookies revoked by that sign-out work again. Replace the session key (without keeping the old one as previous) after a restore.
 
-*What is tested:* the empty-database bootstrap (first passkey with the token) and the import path are covered by the unit and e2e tests. The file-deletion procedure above reaches the same empty state but is not exercised as a scenario of its own, and the cookie-revival caveat is documented, not tested.
+*What is tested:* listing, revoking (prefix, ambiguity, last passkey, unknown id), sign-out, the socket mode and the absence of these routes on the network ports are covered by `admin_test.go`.  the empty-database bootstrap (first passkey with the token) and the import path are covered by the unit and e2e tests. The file-deletion procedure above reaches the same empty state but is not exercised as a scenario of its own, and the cookie-revival caveat is documented, not tested.

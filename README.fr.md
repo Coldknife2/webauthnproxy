@@ -71,6 +71,8 @@ TRUSTED_PROXIES=172.18.0.0/16   # plage d'adresses de Traefik : obligatoire, per
 
 **Plusieurs domaines sans rapport ?** C'est le cas pour lequel ce mode existe (`auth.com` protège `anysite.com` et `other.org`). Avec **un seul domaine et ses sous-domaines**, il n'est pas nécessaire : [Tinyauth](https://tinyauth.app) ou [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) suffisent, et passkey-forwardauth a le meilleur modèle de session ([comparaison et ma conclusion](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth), en anglais).
 
+Exemples complets et testés (`make examples`) : [un site derrière Traefik](examples/proxy-traefik) · [deux domaines sans rapport](examples/two-domains).
+
 Fonctionnement du login multi-domaines : [docs/forwardauth.md](docs/forwardauth.md). Exemple : [`docker-compose.forwardauth.example.yml`](docker-compose.forwardauth.example.yml).
 
 ### Enrôler des passkeys
@@ -84,6 +86,9 @@ Fonctionnement du login multi-domaines : [docs/forwardauth.md](docs/forwardauth.
 | Ajouter une passkey | dans la page | copier le JSON fourni dans `data/import/` |
 
 L'outil statique doit être servi en HTTPS sous le domaine `RP_ID` (pas en `file://`). Détails : [docs/enrollment.md](docs/enrollment.md).
+
+Lister ou révoquer une passkey sans éditer `users.json` : `docker exec webauthnproxy /webauthnproxy passkeys list` / `passkeys revoke <id>` / `signout <utilisateur>`.
+L'image embarque un `HEALTHCHECK` (`webauthnproxy healthcheck`).
 
 ### Configurer
 
@@ -144,6 +149,7 @@ Pocket ID, Tinyauth et Authelia sont de bons projets qui font un autre métier (
 ```sh
 make check   # gofmt, vet, tests (race)
 make e2e     # Chromium + passkey virtuelle ; Traefik en conteneur
+make examples # les deux exemples de examples/, exécutés tels quels (compose)
 make build   # ./webauthnproxy
 make image   # image de conteneur
 ```

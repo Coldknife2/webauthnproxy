@@ -58,6 +58,12 @@ Sections: [session tokens](#session-tokens-hmac-signed-cookies) · [key rotation
 can forge them, at the cost of a database and a lookup per request. Here, stateless verification is what keeps memory and CPU low
 ([performance](performance.md)), and per-user revocation covers the main need (a stolen or lost cookie).
 
+## Local administration socket
+
+`DATA_DIR/admin.sock` (mode `0600`, Unix socket, never a network port) lets the `passkeys list|revoke` and `signout` commands act on the running service ([enrollment.md](enrollment.md#listing-and-revoking-passkeys)).
+Anyone who can open it can delete passkeys and sign users out, so it carries the same trust as write access to the data volume. It cannot add a passkey or create a session.
+*Tested:* socket mode `0600`; the admin routes are absent from the public, enrolment and tool ports and change nothing when called there; the last passkey cannot be deleted; a stale socket from a previous run does not prevent start.
+
 ## Key rotation
 
 The signing key can be replaced **without signing anybody out**: the new key signs everything new, the previous key (or keys) still verifies.

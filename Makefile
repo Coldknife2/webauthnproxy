@@ -2,7 +2,7 @@ BIN      := webauthnproxy
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 RUNTIME  ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
-.PHONY: build test vet fmt check e2e compare bench bench-go bench-langs image clean help
+.PHONY: build test vet fmt check e2e examples image-examples compare bench bench-go bench-langs image clean help
 
 help: ## List targets
 	@grep -E '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-8s %s\n", $$1, $$2}'
@@ -23,6 +23,12 @@ check: fmt vet test ## Everything CI checks except e2e
 
 e2e: build ## End-to-end tests (Chromium + Traefik in a container)
 	cd test/e2e && npm install && npx playwright install chromium && RUNTIME=$(RUNTIME) npm test
+
+image-examples: ## Build the image the examples run (localhost/webauthnproxy:examples)
+	$(RUNTIME) build $(if $(findstring podman,$(RUNTIME)),--format docker) --build-arg VERSION=$(VERSION) -t localhost/webauthnproxy:examples .
+
+examples: image-examples ## Run the two complete examples (examples/) with Chromium (needs compose)
+	cd test/e2e && npm install >/dev/null && RUNTIME=$(RUNTIME) node ../examples/run.cjs
 
 compare: ## Experiment: does one Tinyauth login cover an unrelated domain? (needs podman/docker, Chromium)
 	cd test/e2e && npm install >/dev/null && RUNTIME=$(RUNTIME) node ../compare/tinyauth-crossdomain.cjs

@@ -15,6 +15,7 @@ Requirements: Go (version in `go.mod`), Node 22 and a container runtime (podman 
 ```sh
 make check   # gofmt + go vet + go test -race
 make e2e     # Chromium + virtual authenticator, and Traefik in a container
+make examples # the two complete examples in examples/ (compose, Chromium)
 make build   # ./webauthnproxy binary
 make image   # container image
 ```

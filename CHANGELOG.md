@@ -8,6 +8,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 - **Forward mode requires `TRUSTED_PROXIES`** (CIDRs of Traefik). `X-Forwarded-*` is believed only from those addresses and `/_wap/verify` answers `403` to anyone else. There is no default.
 - The session token gained a last-activity field (`user.aud.exp.gen.seen.signature`): existing cookies are refused once, users sign in again.
 
+### Added
+- `webauthnproxy passkeys list`, `passkeys revoke <id>` and `signout <user>`: manage passkeys of the running service from `docker exec`, through a private Unix socket (`DATA_DIR/admin.sock`, mode 0600); no more editing `users.json`.
+- `GET /_wap/healthz` and `webauthnproxy healthcheck`; the image declares a `HEALTHCHECK`. `/data` in the image is now owned by the unprivileged user, so named volumes work without `chown`.
+- Two complete examples run by `make examples` (podman or docker compose, Chromium with a virtual passkey): `examples/proxy-traefik` and `examples/two-domains`.
+
 ### Security
 - Cross-domain tickets carry an identifier of the issuing process: a ticket used before a restart can no longer be redeemed again, and an instance refuses tickets it did not issue. Single use remains in-memory only, now documented as such with a test per case (replay, restart, two instances).
 - Rate limiting on login and enrolment endpoints, per client address (IPv6 grouped by /64) and globally; `429` with `Retry-After`. `RATE_LIMIT_IP` (default `20/1m`), `RATE_LIMIT_GLOBAL` (default `200/1m`), `off` disables.

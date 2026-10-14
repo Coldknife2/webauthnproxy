@@ -36,7 +36,7 @@ async function login(page) {
     "docker.io/library/traefik:v3", "--providers.file.filename=/dyn.yml", "--entrypoints.web.address=:8000", "--log.level=ERROR"]);
   const version = execFileSync(RUNTIME, ["run", "--rm", IMAGE, "version"]).toString().replace(/\x1b\[[0-9;]*m/g, "").match(/Version: (\S+)/)[1];
   log("Tinyauth " + version + " behind Traefik; login host auth.test.local; sites: x.test.local (same parent domain) and a.siteone.test (unrelated domain)");
-  const browser = await chromium.launch({ ...(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {}),
+  const browser = await chromium.launch({ ...(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : { channel: "chromium" }),
     args: ["--host-resolver-rules=MAP *.test.local 127.0.0.1,MAP *.siteone.test 127.0.0.1"] });
   try {
     const ctx = await browser.newContext(); const page = await ctx.newPage();

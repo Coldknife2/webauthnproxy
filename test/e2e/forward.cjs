@@ -35,7 +35,7 @@ const until = async (f, ms = 15000) => { const t = Date.now(); while (Date.now()
 (async () => {
   execFileSync(RUNTIME, ["run", "-d", "--rm", "--name", "wap-e2e-traefik", "--network=host", "-v", `${dyn}:/dyn.yml:ro`,
     "docker.io/library/traefik:v3", "--providers.file.filename=/dyn.yml", "--entrypoints.web.address=:8000", "--log.level=ERROR"]);
-  const browser = await chromium.launch({ ...(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {}), args: [
+  const browser = await chromium.launch({ ...(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : { channel: "chromium" }), args: [
     "--host-resolver-rules=MAP *.test.local 127.0.0.1",
     "--unsafely-treat-insecure-origin-as-secure=http://auth.test.local:8000,http://enroll.test.local:8081"] });
   try {

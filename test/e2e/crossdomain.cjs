@@ -43,7 +43,7 @@ const raw = (host, urlPath, headers = {}) => new Promise((res, rej) => http.get(
   execFileSync(RUNTIME, ["run", "-d", "--rm", "--name", "wap-xd-traefik", "--network=host", "-v", `${dyn}:/dyn.yml:ro`,
     "docker.io/library/traefik:v3", "--providers.file.filename=/dyn.yml", "--entrypoints.web.address=:8000", "--log.level=ERROR"]);
   const hosts = ["test.local", "siteone.test", "sitetwo.test", "unlisted.test"].map((d) => `MAP *.${d} 127.0.0.1`).join(",");
-  const browser = await chromium.launch({ ...(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {}), args: [
+  const browser = await chromium.launch({ ...(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : { channel: "chromium" }), args: [
     `--host-resolver-rules=${hosts}`,
     "--unsafely-treat-insecure-origin-as-secure=http://auth.test.local:8000,http://enroll.test.local:8081"] });
   try {

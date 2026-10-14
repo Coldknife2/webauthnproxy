@@ -6,19 +6,24 @@
  input,button{font-size:1rem;padding:.5rem .8rem;border-radius:6px;border:1px solid #bbb}
  button{background:#2563eb;color:#fff;border:0;cursor:pointer}
  button.del{background:#b91c1c;padding:.2rem .6rem;font-size:.85rem}
- li{margin:.4rem 0} code{background:#eee;padding:0 .3rem;border-radius:4px}
+ li{margin:.4rem 0}
  #msg{min-height:1.4em;margin-top:.8rem} .err{color:#b91c1c} .ok{color:#15803d}
  .warn{background:#fef3c7;padding:.6rem 1rem;border-radius:8px}
+ form{display:flex;flex-wrap:wrap;gap:.5rem} [hidden]{display:none!important}
 </style></head>
 <body>
  <h1>Enrôlement des passkeys</h1>
- <p class="warn">Endpoint d'administration : ne doit pas être exposé publiquement.</p>
+ <p id="who"></p>
+ <p id="boot" class="warn" hidden>Aucune passkey n'existe encore. Saisissez le jeton d'amorçage affiché dans les logs du service.</p>
  <form id="f">
+   <input id="token" placeholder="Jeton d'amorçage" autocomplete="off" hidden>
    <input id="name" placeholder="Nom d'utilisateur" required maxlength="64" autofocus>
    <button>Ajouter une passkey</button>
  </form>
  <div id="msg"></div>
- <h2>Utilisateurs enregistrés</h2>
+ <h2>Passkeys enregistrées</h2>
  <ul id="list"></ul>
+ <form id="out" method="post" action="/_wap/logout" hidden><button>Se déconnecter</button></form>
 <script src="/_wap/app.js"></script>
-<script src="/_wap/enroll.js"></script></body></html>
+<script src="/_wap/enroll.js"></script>
+</body></html>

@@ -1,16 +1,22 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 )
@@ -29,6 +35,9 @@ type App struct {
 	sessions *Sessions
 	login    *Ceremonies[webauthn.SessionData]
 	enroll   *Ceremonies[enrollState]
+
+	bootMu sync.Mutex
+	boot   string // jeton d'amorçage de l'enrôlement (base vide)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -64,10 +73,7 @@ func (a *App) publicHandler() http.Handler {
 	mux.HandleFunc("GET "+prefix+"/login.js", a.staticPage("login.js"))
 	mux.HandleFunc("POST "+prefix+"/login/begin", a.loginBegin)
 	mux.HandleFunc("POST "+prefix+"/login/finish", a.loginFinish)
-	mux.HandleFunc("POST "+prefix+"/logout", func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, a.cookie(r, "", -1))
-		http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
-	})
+	mux.HandleFunc("POST "+prefix+"/logout", a.logout)
 	if a.cfg.Mode == "forward" {
 		mux.HandleFunc(prefix+"/verify", a.verify)
 		mux.HandleFunc("GET /{$}", a.home)
@@ -227,37 +233,120 @@ func (a *App) loginFinish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"next": a.safeNext(r.URL.Query().Get("next"))})
 }
 
-// ---------------------------------------------------------------- enrôlement (privé)
+// ---------------------------------------------------------------- enrôlement automatique
 
+// enrollHandler sert l'enrôlement automatique. Il est protégé par les passkeys existantes
+// (session obtenue par la page de connexion de ce même port). Tant qu'aucune passkey n'existe,
+// un jeton d'amorçage affiché dans les logs au démarrage autorise la création de la première.
 func (a *App) enrollHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", a.staticPage("enroll.html"))
+	// Connexion (ouverte) : mêmes endpoints que le proxy public.
+	mux.HandleFunc("GET "+prefix+"/login", a.staticPage("login.html"))
 	mux.HandleFunc("GET "+prefix+"/app.js", a.staticPage("app.js"))
+	mux.HandleFunc("GET "+prefix+"/login.js", a.staticPage("login.js"))
+	mux.HandleFunc("POST "+prefix+"/login/begin", a.loginBegin)
+	mux.HandleFunc("POST "+prefix+"/login/finish", a.loginFinish)
+	mux.HandleFunc("POST "+prefix+"/logout", a.logout)
+	// Page et API (protégées).
 	mux.HandleFunc("GET "+prefix+"/enroll.js", a.staticPage("enroll.js"))
-	mux.HandleFunc("GET /api/users", a.apiUsers)
-	mux.HandleFunc("POST /api/register/begin", a.registerBegin)
-	mux.HandleFunc("POST /api/register/finish", a.registerFinish)
-	mux.HandleFunc("DELETE /api/credentials", a.deleteCredential)
-	return a.enrollGuard(mux)
+	mux.Handle("GET /{$}", a.enrollGuard(a.staticPage("enroll.html")))
+	mux.Handle("GET /api/state", a.enrollGuard(http.HandlerFunc(a.apiState)))
+	mux.Handle("GET /api/users", a.enrollGuard(http.HandlerFunc(a.apiUsers)))
+	mux.Handle("POST /api/register/begin", a.enrollGuard(http.HandlerFunc(a.registerBegin)))
+	mux.Handle("POST /api/register/finish", a.enrollGuard(http.HandlerFunc(a.registerFinish)))
+	mux.Handle("DELETE /api/credentials", a.enrollGuard(http.HandlerFunc(a.deleteCredential)))
+	return mux
+}
+
+// bootstrapToken retourne le jeton d'amorçage (créé et journalisé à la demande) tant que la base est vide.
+func (a *App) bootstrapToken() string {
+	a.bootMu.Lock()
+	defer a.bootMu.Unlock()
+	if a.boot == "" {
+		b := make([]byte, 18)
+		_, _ = rand.Read(b)
+		a.boot = b64.EncodeToString(b)
+		log.Printf("Aucune passkey enregistrée. Jeton d'amorçage de l'enrôlement : %s", a.boot)
+	}
+	return a.boot
 }
 
 func (a *App) enrollGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.cfg.EnrollPassword != "" {
-			_, pw, ok := r.BasicAuth()
-			if !ok || subtle.ConstantTimeCompare([]byte(pw), []byte(a.cfg.EnrollPassword)) != 1 {
-				w.Header().Set("WWW-Authenticate", `Basic realm="enrolement"`)
-				http.Error(w, "non autorisé", http.StatusUnauthorized)
+		_, authed := a.currentUser(r)
+		bootstrap := !authed && a.store.CredentialCount() == 0
+		if !authed && !bootstrap {
+			if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+				http.Redirect(w, r, prefix+"/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+				return
+			}
+			http.Error(w, "authentification requise", http.StatusUnauthorized)
+			return
+		}
+		if r.Method != http.MethodGet {
+			// Anti-CSRF : un header custom force un preflight CORS, que nous ne répondons jamais.
+			if r.Header.Get("X-Requested-With") != "wap" {
+				http.Error(w, "requête refusée", http.StatusForbidden)
+				return
+			}
+			if bootstrap && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Bootstrap-Token")), []byte(a.bootstrapToken())) != 1 {
+				http.Error(w, "jeton d'amorçage invalide (voir les logs du conteneur)", http.StatusForbidden)
 				return
 			}
 		}
-		// Anti-CSRF : un header custom force un preflight CORS, que nous ne répondons jamais.
-		if r.Method != http.MethodGet && r.Header.Get("X-Requested-With") != "wap" {
-			http.Error(w, "requête refusée", http.StatusForbidden)
-			return
-		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (a *App) logout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, a.cookie(r, "", -1))
+	http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
+}
+
+func (a *App) apiState(w http.ResponseWriter, r *http.Request) {
+	name, authed := a.currentUser(r)
+	boot := !authed && a.store.CredentialCount() == 0
+	if boot {
+		a.bootstrapToken() // s'assure que le jeton est affiché dans les logs
+	}
+	writeJSON(w, 200, map[string]any{"bootstrap": boot, "user": name})
+}
+
+// ---------------------------------------------------------------- outil statique
+
+// toolHandler sert uniquement web/tool.html (aucune API, aucun état, aucune écriture) :
+// il peut être exposé publiquement, car créer une passkey ne donne aucun accès tant que le
+// fichier JSON produit n'a pas été importé à la main dans DATA_DIR/import.
+func (a *App) toolHandler() http.Handler {
+	page, _ := fs.ReadFile(webFS, "web/tool.html")
+	csp := toolCSP(page)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("rpid") == "" {
+			http.Redirect(w, r, "/?rpid="+url.QueryEscape(a.cfg.RPID), http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", csp)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		_, _ = w.Write(page)
+	})
+	return mux
+}
+
+var inlineRe = regexp.MustCompile(`(?s)<(script|style)>(.*?)</(?:script|style)>`)
+
+// toolCSP autorise uniquement le script et le style inline de la page, par empreinte.
+func toolCSP(page []byte) string {
+	src := map[string]string{"script": "", "style": ""}
+	for _, m := range inlineRe.FindAllSubmatch(page, -1) {
+		h := sha256.Sum256(m[2])
+		src[string(m[1])] += " 'sha256-" + base64.StdEncoding.EncodeToString(h[:]) + "'"
+	}
+	return "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; script-src" +
+		src["script"] + "; style-src" + src["style"]
 }
 
 func b64s(b []byte) string { return b64.EncodeToString(b) }
@@ -313,6 +402,10 @@ func (a *App) registerFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.store.AddCredential(st.User, cred); err != nil {
+		if errors.Is(err, ErrDuplicate) {
+			jsonErr(w, 409, err.Error())
+			return
+		}
 		jsonErr(w, 500, "écriture impossible: "+err.Error())
 		return
 	}
@@ -324,6 +417,10 @@ func (a *App) deleteCredential(w http.ResponseWriter, r *http.Request) {
 	cid, err2 := b64.DecodeString(r.URL.Query().Get("id"))
 	if err1 != nil || err2 != nil {
 		jsonErr(w, 400, "paramètres invalides")
+		return
+	}
+	if a.store.CredentialCount() <= 1 {
+		jsonErr(w, 409, "impossible de supprimer la dernière passkey (verrouillage de l'accès)")
 		return
 	}
 	if err := a.store.DeleteCredential(uid, cid); err != nil {

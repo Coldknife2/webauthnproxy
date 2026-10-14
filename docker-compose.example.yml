@@ -23,9 +23,9 @@ services:
       UPSTREAM: http://monsite:80
       RP_ID: example.com                    # domaine (ou parent) du site
       RP_ORIGINS: https://app.example.com   # URL publique du site, sans slash final
-      # Enrôlement : décommenter uniquement quand on veut ajouter une passkey
-      # ENROLL_ENABLED: "true"
-      # ENROLL_PASSWORD: "change-me"
+      # Enrôlement : à décommenter uniquement quand on veut ajouter une passkey (voir le README)
+      # ENROLL_ENABLED: "true"     # enrôlement automatique (port 8081)
+      # TOOL_ENABLED: "true"       # outil statique (port 8082) + import manuel du JSON
       # RP_ORIGINS: https://app.example.com,https://enroll.example.com
     volumes:
       - ./data:/data
@@ -36,7 +36,7 @@ services:
       - traefik.http.routers.app.tls.certresolver=le
       - traefik.http.routers.app.service=app
       - traefik.http.services.app.loadbalancer.server.port=8080
-      # Routeur d'enrôlement PRIVÉ (réseau interne uniquement) — à n'activer qu'avec ENROLL_ENABLED
+      # Routeur d'enrôlement automatique (protégé par passkey ; à restreindre au réseau privé par défense en profondeur)
       # - traefik.http.routers.enroll.rule=Host(`enroll.example.com`)
       # - traefik.http.routers.enroll.entrypoints=websecure
       # - traefik.http.routers.enroll.tls.certresolver=le
@@ -44,3 +44,9 @@ services:
       # - traefik.http.routers.enroll.service=enroll
       # - traefik.http.services.enroll.loadbalancer.server.port=8081
       # - traefik.http.middlewares.lan.ipallowlist.sourcerange=192.168.0.0/16,10.0.0.0/8
+      # Outil statique (sans état, peut être public) : doit être servi en HTTPS sous le domaine RP_ID
+      # - traefik.http.routers.tool.rule=Host(`tool.example.com`)
+      # - traefik.http.routers.tool.entrypoints=websecure
+      # - traefik.http.routers.tool.tls.certresolver=le
+      # - traefik.http.routers.tool.service=tool
+      # - traefik.http.services.tool.loadbalancer.server.port=8082

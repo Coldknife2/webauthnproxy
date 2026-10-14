@@ -23,7 +23,7 @@ services:
       COOKIE_DOMAIN: example.com            # cookie partagé par tous les sous-domaines
       RP_ID: example.com
       RP_ORIGINS: https://auth.example.com  # origine de la page de login (+ celle d'enrôlement si activé)
-      # ENROLL_ENABLED: "true"
+      # ENROLL_ENABLED: "true"   # enrôlement automatique (8081) ; TOOL_ENABLED=true pour l'outil statique (8082)
     volumes:
       - ./data:/data
     labels:

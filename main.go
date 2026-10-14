@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -48,6 +49,10 @@ func main() {
 		log.Fatalf("webauthn: %v", err)
 	}
 
+	if err := watchImports(store, filepath.Join(cfg.DataDir, "import"), cfg.RPID, uv == protocol.VerificationRequired); err != nil {
+		log.Fatalf("dossier d'import: %v", err)
+	}
+
 	app := &App{
 		cfg:      cfg,
 		store:    store,
@@ -60,7 +65,12 @@ func main() {
 	servers := []*http.Server{{Addr: cfg.Listen, Handler: app.publicHandler()}}
 	if cfg.EnrollEnabled {
 		servers = append(servers, &http.Server{Addr: cfg.EnrollListen, Handler: app.enrollHandler()})
-		log.Printf("ATTENTION: enrôlement activé sur %s — ne pas exposer ce port publiquement", cfg.EnrollListen)
+		if store.CredentialCount() == 0 {
+			app.bootstrapToken()
+		}
+	}
+	if cfg.ToolEnabled {
+		servers = append(servers, &http.Server{Addr: cfg.ToolListen, Handler: app.toolHandler()})
 	}
 	for _, s := range servers {
 		s.ReadHeaderTimeout = 10 * time.Second

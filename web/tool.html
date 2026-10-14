@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>webauthnproxy — outil d'enrôlement</title>
+<style>
+ body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;color:#111;line-height:1.5}
+ label{display:block;margin:.8rem 0 .2rem;font-weight:600}
+ input,textarea,button{font:inherit;padding:.5rem .8rem;border-radius:6px;border:1px solid #bbb;box-sizing:border-box}
+ input{width:100%} textarea{width:100%;height:14rem;font-family:ui-monospace,monospace;font-size:.85rem}
+ button{background:#2563eb;color:#fff;border:0;cursor:pointer;margin:.6rem .4rem .6rem 0}
+ button.alt{background:#4b5563}
+ #err{color:#b91c1c} .note{background:#f3f4f6;padding:.6rem 1rem;border-radius:8px;font-size:.9rem}
+ [hidden]{display:none!important}
+</style></head>
+<body>
+ <h1>Outil d'enrôlement de passkey</h1>
+ <p class="note">Cette page ne contacte aucun serveur. Elle crée une passkey dans votre navigateur et produit un fichier JSON
+ (clé publique uniquement). La passkey ne donne aucun accès tant que ce fichier n'a pas été copié par un administrateur dans le
+ dossier <code>import/</code> du proxy.</p>
+ <label for="rp">Domaine (RP ID)</label>
+ <input id="rp" placeholder="example.com" autocomplete="off">
+ <label for="name">Nom d'utilisateur</label>
+ <input id="name" maxlength="64" placeholder="remi" autocomplete="off">
+ <button id="go">Créer la passkey</button>
+ <div id="err"></div>
+ <div id="res" hidden>
+   <label for="json">Fichier à importer</label>
+   <textarea id="json" readonly></textarea>
+   <button id="dl">Télécharger</button><button id="cp" class="alt">Copier</button>
+   <p class="note">Placez le fichier dans <code>&lt;DATA_DIR&gt;/import/</code> (ex. <code>cp remi.json data/import/</code>). Le proxy l'importe en quelques secondes.</p>
+ </div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const enc = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const q = new URLSearchParams(location.search).get("rpid");
+$("rp").value = q || location.hostname;
+
+// Même dérivation que le proxy : le même nom donne toujours le même utilisateur.
+async function userId(name) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("webauthnproxy:user:" + name)));
+}
+
+$("go").onclick = async () => {
+  $("err").textContent = ""; $("res").hidden = true;
+  const rpId = $("rp").value.trim(), name = $("name").value;
+  if (!rpId || !name.trim() || name !== name.trim() || name.length > 64) {
+    $("err").textContent = "Domaine et nom d'utilisateur requis (sans espaces autour, 64 caractères max)."; return;
+  }
+  try {
+    const id = await userId(name);
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rp: { id: rpId, name: rpId },
+      user: { id, name, displayName: name },
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -8 }, { type: "public-key", alg: -257 }],
+      authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
+      attestation: "none", timeout: 120000,
+    }});
+    const r = cred.response;
+    const out = {
+      version: 1, rpId,
+      user: { id: enc(id), name },
+      credential: {
+        id: enc(cred.rawId),
+        authenticatorData: enc(r.getAuthenticatorData()),
+        transports: r.getTransports ? r.getTransports() : [],
+      },
+    };
+    $("json").value = JSON.stringify(out, null, 2); $("res").hidden = false;
+    $("dl").onclick = () => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([$("json").value], { type: "application/json" }));
+      a.download = name.replace(/[^\w.-]+/g, "_") + "-" + rpId + ".json"; a.click();
+    };
+    $("cp").onclick = () => navigator.clipboard.writeText($("json").value);
+  } catch (e) { $("err").textContent = e.name + " : " + e.message; }
+};
+</script>
+</body></html>

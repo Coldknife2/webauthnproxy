@@ -1,3 +1,7 @@
 .git
+.github
 data
+test
+node_modules
 *.md
+webauthnproxy

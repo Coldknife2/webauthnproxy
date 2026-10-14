@@ -1,7 +1,7 @@
 package main
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"os"
@@ -105,14 +105,33 @@ func (s *Store) ByID(id []byte) *User {
 	return nil
 }
 
-// GetOrCreate retourne l'utilisateur (copie) ; il n'est persisté qu'avec AddCredential.
+// ErrDuplicate est retournée quand la passkey est déjà enregistrée.
+var ErrDuplicate = errors.New("passkey déjà enregistrée")
+
+// userIDFor dérive l'identifiant (user handle) du nom : le même nom donne toujours le même
+// utilisateur, quel que soit l'outil d'enrôlement (automatique ou import de fichier).
+func userIDFor(name string) []byte {
+	h := sha256.Sum256([]byte("webauthnproxy:user:" + name))
+	return h[:]
+}
+
+// GetOrNew retourne l'utilisateur (copie) ; il n'est persisté qu'avec AddCredential.
 func (s *Store) GetOrNew(name string) *User {
 	if u := s.ByName(name); u != nil {
 		return u
 	}
-	id := make([]byte, 32)
-	_, _ = rand.Read(id)
-	return &User{ID: id, Name: name}
+	return &User{ID: userIDFor(name), Name: name}
+}
+
+// CredentialCount retourne le nombre total de passkeys.
+func (s *Store) CredentialCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, u := range s.Users {
+		n += len(u.Credentials)
+	}
+	return n
 }
 
 func (s *Store) AddCredential(u *User, c *webauthn.Credential) error {
@@ -120,6 +139,11 @@ func (s *Store) AddCredential(u *User, c *webauthn.Credential) error {
 	defer s.mu.Unlock()
 	var cur *User
 	for _, x := range s.Users {
+		for i := range x.Credentials {
+			if string(x.Credentials[i].ID) == string(c.ID) {
+				return ErrDuplicate
+			}
+		}
 		if string(x.ID) == string(u.ID) {
 			cur = x
 		}

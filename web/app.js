@@ -3,10 +3,11 @@ const P = "/_wap";
 const enc = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const dec = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)).buffer;
 
+let extraHeaders = {};
 async function api(url, method, body) {
   const r = await fetch(url, {
     method, credentials: "same-origin",
-    headers: { "Content-Type": "application/json", "X-Requested-With": "wap" },
+    headers: { "Content-Type": "application/json", "X-Requested-With": "wap", ...extraHeaders },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const j = await r.json().catch(() => ({}));

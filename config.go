@@ -11,22 +11,23 @@ import (
 
 // Config est lu uniquement depuis les variables d'environnement.
 type Config struct {
-	Mode           string        // MODE : "proxy" (défaut) ou "forward" (forwardAuth Traefik)
-	LoginURL       *url.URL      // LOGIN_URL (mode forward) : URL publique de la page de login
-	CookieDomain   string        // COOKIE_DOMAIN (mode forward) : domaine parent du cookie de session
-	Upstream       *url.URL      // UPSTREAM (mode proxy) : site à protéger
-	Listen         string        // LISTEN : port public du proxy
-	EnrollEnabled  bool          // ENROLL_ENABLED : active le endpoint d'enrôlement
-	EnrollListen   string        // ENROLL_LISTEN : port privé d'enrôlement
-	EnrollPassword string        // ENROLL_PASSWORD : mot de passe basic-auth optionnel (user: admin)
-	RPID           string        // RP_ID : domaine WebAuthn (ex: example.com)
-	RPName         string        // RP_NAME
-	RPOrigins      []string      // RP_ORIGINS : origines autorisées (ex: https://app.example.com)
-	DataDir        string        // DATA_DIR
-	SessionSecret  []byte        // SESSION_SECRET (sinon généré et stocké dans DATA_DIR)
-	SessionTTL     time.Duration // SESSION_TTL
-	PreserveHost   bool          // PRESERVE_HOST : transmet le Host d'origine à l'upstream
-	UserHeader     string        // USER_HEADER : header envoyé à l'upstream avec le nom de l'utilisateur
+	Mode          string        // MODE : "proxy" (défaut) ou "forward" (forwardAuth Traefik)
+	LoginURL      *url.URL      // LOGIN_URL (mode forward) : URL publique de la page de login
+	CookieDomain  string        // COOKIE_DOMAIN (mode forward) : domaine parent du cookie de session
+	Upstream      *url.URL      // UPSTREAM (mode proxy) : site à protéger
+	Listen        string        // LISTEN : port public du proxy
+	EnrollEnabled bool          // ENROLL_ENABLED : enrôlement automatique (protégé par passkey)
+	EnrollListen  string        // ENROLL_LISTEN : port de l'enrôlement automatique
+	ToolEnabled   bool          // TOOL_ENABLED : outil d'enrôlement statique (import manuel)
+	ToolListen    string        // TOOL_LISTEN : port de l'outil statique
+	RPID          string        // RP_ID : domaine WebAuthn (ex: example.com)
+	RPName        string        // RP_NAME
+	RPOrigins     []string      // RP_ORIGINS : origines autorisées (ex: https://app.example.com)
+	DataDir       string        // DATA_DIR
+	SessionSecret []byte        // SESSION_SECRET (sinon généré et stocké dans DATA_DIR)
+	SessionTTL    time.Duration // SESSION_TTL
+	PreserveHost  bool          // PRESERVE_HOST : transmet le Host d'origine à l'upstream
+	UserHeader    string        // USER_HEADER : header envoyé à l'upstream avec le nom de l'utilisateur
 }
 
 func getenv(k, def string) string {
@@ -43,15 +44,16 @@ func getbool(k string) bool {
 
 func LoadConfig() (*Config, error) {
 	c := &Config{
-		Listen:         getenv("LISTEN", ":8080"),
-		EnrollEnabled:  getbool("ENROLL_ENABLED"),
-		EnrollListen:   getenv("ENROLL_LISTEN", ":8081"),
-		EnrollPassword: os.Getenv("ENROLL_PASSWORD"),
-		RPID:           getenv("RP_ID", ""),
-		RPName:         getenv("RP_NAME", "WebAuthn Proxy"),
-		DataDir:        getenv("DATA_DIR", "/data"),
-		PreserveHost:   getbool("PRESERVE_HOST"),
-		UserHeader:     getenv("USER_HEADER", "X-Authenticated-User"),
+		Listen:        getenv("LISTEN", ":8080"),
+		EnrollEnabled: getbool("ENROLL_ENABLED"),
+		EnrollListen:  getenv("ENROLL_LISTEN", ":8081"),
+		ToolEnabled:   getbool("TOOL_ENABLED"),
+		ToolListen:    getenv("TOOL_LISTEN", ":8082"),
+		RPID:          getenv("RP_ID", ""),
+		RPName:        getenv("RP_NAME", "WebAuthn Proxy"),
+		DataDir:       getenv("DATA_DIR", "/data"),
+		PreserveHost:  getbool("PRESERVE_HOST"),
+		UserHeader:    getenv("USER_HEADER", "X-Authenticated-User"),
 	}
 
 	c.Mode = getenv("MODE", "proxy")

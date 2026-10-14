@@ -61,6 +61,12 @@ docker run --rm -p 8080:8080 -p 127.0.0.1:8081:8081 -v $PWD/data:/data \
 
 Voir `docker-compose.example.yml` pour l'intégration Traefik (TLS, routeur d'enrôlement restreint par IP).
 
+## Podman / permissions
+
+L'image tourne en non-root (uid 65532). Pour un dossier monté depuis l'hôte : `mkdir data && chown 65532 data`
+(en podman rootless : `podman unshare chown 65532:65532 data`, ou `--userns=keep-id --user $(id -u)`).
+Le `Dockerfile` utilise des noms d'images qualifiés : `podman build -t webauthnproxy .` fonctionne tel quel.
+
 ## Limites connues
 
 - Pas de limitation de débit sur `/_wap/login/*` (les passkeys ne sont pas devinables, mais une limite côté Traefik est conseillée).

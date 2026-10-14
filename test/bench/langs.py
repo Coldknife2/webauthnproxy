@@ -24,7 +24,7 @@ def targets(data):
     return [
         ("Go (minimal handler)", "lang-go", []),
         ("Go (webauthnproxy, full app)", bench.WAP, ["-v", f"{data}:/data", "-e", "MODE=forward", "-e", "LOGIN_URL=https://auth.example.com/_wap/login",
-            "-e", "ALLOWED_HOSTS=app.example.com", "-e", "RP_ID=example.com", "-e", "RP_ORIGINS=https://auth.example.com", "-e", f"SESSION_SECRET={SECRET}"]),
+            "-e", "ALLOWED_HOSTS=app.example.com", "-e", "TRUSTED_PROXIES=0.0.0.0/0", "-e", "RP_ID=example.com", "-e", "RP_ORIGINS=https://auth.example.com", "-e", f"SESSION_SECRET={SECRET}"]),
         ("Rust (axum)", "lang-rust", []),
         ("Node 22", "lang-node", []),
         ("Python 3.13 (uvicorn)", "lang-python", []),

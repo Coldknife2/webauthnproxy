@@ -42,7 +42,7 @@ def b64(x):
 
 
 def wap_cookie(user, aud):
-    p = ".".join([b64(user.encode()), b64(aud.encode()), str(int(time.time()) + 86400), "0"])  # user.aud.exp.gen
+    p = ".".join([b64(user.encode()), b64(aud.encode()), str(int(time.time()) + 86400), "0", str(int(time.time()))])  # user.aud.exp.gen.seen
     return p + "." + b64(hmac.new(SECRET.encode(), ("s|" + p).encode(), hashlib.sha256).digest())
 
 
@@ -127,7 +127,8 @@ def main():
         t0 = time.time()
         sh(RT, "run", "-d", "--name", "wap-bench", "-p", "18080:8080", "-v", f"{data}:/data",
            "-e", "MODE=forward", "-e", "LOGIN_URL=https://auth.example.com/_wap/login", "-e", "ALLOWED_HOSTS=app.example.com",
-           "-e", "RP_ID=example.com", "-e", "RP_ORIGINS=https://auth.example.com", "-e", f"SESSION_SECRET={SECRET}", WAP)
+           "-e", "RP_ID=example.com", "-e", "RP_ORIGINS=https://auth.example.com", "-e", f"SESSION_SECRET={SECRET}",
+           "-e", "TRUSTED_PROXIES=0.0.0.0/0", WAP)  # benchmark only: the load generator is the "proxy"
         wait_http("http://127.0.0.1:18080/_wap/verify"); up = time.time() - t0
         hdr = ["Host: app.example.com", "X-Forwarded-Host: app.example.com", "X-Forwarded-Uri: /",
                "Cookie: wap_session=" + wap_cookie("bench", "app.example.com")]

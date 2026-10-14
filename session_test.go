@@ -6,7 +6,7 @@ import (
 )
 
 func TestSessionRoundTrip(t *testing.T) {
-	s := &Sessions{secret: []byte("0123456789abcdef"), ttl: time.Hour}
+	s := NewSessions([]byte("0123456789abcdef0123456789abcdef"), nil, time.Hour, 0)
 	name, aud, gen, err := s.Verify(s.New("remi", "app.example.com", 7))
 	if err != nil || name != "remi" || aud != "app.example.com" || gen != 7 {
 		t.Fatalf("got %q %q %d, %v", name, aud, gen, err)
@@ -17,16 +17,16 @@ func TestSessionRoundTrip(t *testing.T) {
 }
 
 func TestSessionRejects(t *testing.T) {
-	s := &Sessions{secret: []byte("0123456789abcdef"), ttl: time.Hour}
+	s := NewSessions([]byte("0123456789abcdef0123456789abcdef"), nil, time.Hour, 0)
 	tok := s.New("remi", "", 0)
-	other := &Sessions{secret: []byte("fedcba9876543210"), ttl: time.Hour}
+	other := NewSessions([]byte("fedcba9876543210fedcba9876543210"), nil, time.Hour, 0)
 	if _, _, _, err := other.Verify(tok); err == nil {
 		t.Error("signature from another secret accepted")
 	}
 	if _, _, _, err := s.Verify(tok + "x"); err == nil {
 		t.Error("tampered signature accepted")
 	}
-	expired := &Sessions{secret: s.secret, ttl: -time.Minute}
+	expired := NewSessions(s.keys[0], nil, -time.Minute, 0)
 	if _, _, _, err := s.Verify(expired.New("remi", "", 0)); err == nil {
 		t.Error("expired session accepted")
 	}
@@ -44,7 +44,7 @@ func TestCeremonyOneShot(t *testing.T) {
 }
 
 func TestTicket(t *testing.T) {
-	s := &Sessions{secret: []byte("0123456789abcdef"), ttl: time.Hour}
+	s := NewSessions([]byte("0123456789abcdef0123456789abcdef"), nil, time.Hour, 0)
 	user, aud, gen, nonce, _, err := s.VerifyTicket(s.NewTicket("remi", "app.example.com", 3))
 	if err != nil || user != "remi" || aud != "app.example.com" || gen != 3 || nonce == "" {
 		t.Fatalf("got %q %q %d %q, %v", user, aud, gen, nonce, err)
@@ -57,7 +57,7 @@ func TestTicket(t *testing.T) {
 		t.Error("ticket accepted as session")
 	}
 	// tickets are short-lived
-	old := s.token("t", "remi", "x", -time.Second, 0, "n")
+	old := s.token("t", "remi", "x", time.Now().Add(-time.Second), 0, "n")
 	if _, _, _, _, _, err := s.VerifyTicket(old); err == nil {
 		t.Error("expired ticket accepted")
 	}

@@ -23,7 +23,7 @@ const upstream = http.createServer((q, r) => {
 const proxy = spawn(BIN, [], { env: {
   ...process.env, DATA_DIR: data, UPSTREAM: "http://127.0.0.1:9000", RP_ID: "localhost",
   RP_ORIGINS: "http://localhost:8080,http://localhost:8081,http://localhost:8082",
-  ENROLL_ENABLED: "true", TOOL_ENABLED: "true",
+  ENROLL_ENABLED: "true", TOOL_ENABLED: "true", RATE_LIMIT_IP: "500/1m", RATE_LIMIT_GLOBAL: "off",
 }});
 proxy.stderr.on("data", (d) => log.push(String(d)));
 proxy.stdout.on("data", (d) => log.push(String(d)));
@@ -107,6 +107,11 @@ async function newPage(browser) {
       return (await fetch(`/api/credentials?user=${u.id}&id=${u.credentials[0].id}`, { method: "DELETE", headers: { "X-Requested-With": "wap" } })).status;
     });
     assert.equal(last, 409); step("the last passkey cannot be deleted");
+    // The audit log (JSON on standard output) recorded the security events, and no secret
+    const out = log.join("");
+    for (const ev of ["enroll_success", "enroll_failure", "login_success", "login_failure"]) assert.ok(out.includes(`"event":"${ev}"`), "audit event missing: " + ev);
+    assert.ok(!out.includes("wap_session="), "a cookie reached the logs");
+    step("audit log: enrollment and login events are recorded as JSON, without cookies");
     console.log("\nAll scenarios pass.");
   } finally {
     await browser.close(); proxy.kill(); upstream.close(); fs.rmSync(data, { recursive: true, force: true });

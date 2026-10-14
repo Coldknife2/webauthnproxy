@@ -16,10 +16,15 @@ func testApp(t testing.TB) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wa, err := webauthn.New(&webauthn.Config{RPDisplayName: "test", RPID: "example.com", RPOrigins: []string{"https://example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &App{
-		cfg:      &Config{Mode: "proxy", SessionTTL: time.Hour},
+		cfg:      &Config{Mode: "proxy", SessionTTL: time.Hour, CookieSecure: "auto"},
 		store:    store,
-		sessions: &Sessions{secret: []byte("0123456789abcdef"), ttl: time.Hour},
+		wa:       wa,
+		sessions: NewSessions([]byte("0123456789abcdef0123456789abcdef"), nil, time.Hour, 0),
 		login:    NewCeremonies[webauthn.SessionData](),
 		enroll:   NewCeremonies[enrollState](),
 	}

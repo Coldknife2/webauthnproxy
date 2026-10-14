@@ -13,12 +13,20 @@
 | | `Cookie`, `Accept` | the session; browser (redirect) or API client (`401`) |
 | `proxy` | `Host`, `X-Forwarded-Proto` | `Secure` flag of the cookie; the upstream gets the usual `X-Forwarded-*` |
 
+**`TRUSTED_PROXIES` decides whether these headers are believed.** The service believes `X-Forwarded-*` only when the TCP peer is inside `TRUSTED_PROXIES`
+(comma-separated CIDRs or addresses, e.g. `172.18.0.0/16`); the default is empty, i.e. never. Forward mode refuses to start without it, and `/_wap/verify`
+answers `403` (audit event `untrusted_proxy`) to any other caller, so a client that reaches the port directly cannot forge the host or scheme.
+In proxy mode, forwarded headers from untrusted clients are removed before the request reaches the upstream. Details and tests: [security.md](security.md#trusted-proxies-and-forwarded-headers).
+
 Traefik builds the `X-Forwarded-*` headers of the forwardAuth request itself, from the request it received
 ([Traefik forwardAuth reference](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/forwardauth/), read 2026-10-14).
 
 **Keep Traefik's defaults.** The same page documents `trustForwardHeader` (deprecated): setting it to `true` makes Traefik trust *every* `X-Forwarded-*` header it receives.
-Only do that if Traefik itself sits behind a proxy you control and `forwardedHeaders.trustedIPs` is set on the entry point; otherwise any client can forge the host and scheme
-this service relies on. The service cannot tell a forged header from a real one.
+Only do that if Traefik itself sits behind a proxy you control and `forwardedHeaders.trustedIPs` is set on the entry point; otherwise any client can forge the host and scheme.
+`TRUSTED_PROXIES` protects this service from direct callers, not from a Traefik that forwards forged headers.
+
+**Idle timeout (`SESSION_IDLE_TIMEOUT`).** The renewed cookie is sent back on the `/_wap/verify` response; Traefik only passes it to the browser with
+`addAuthCookiesToResponse: [wap_session]` (label `traefik.http.middlewares.passkey.forwardauth.addAuthCookiesToResponse=wap_session`). Without it, the idle timeout still applies but is never renewed.
 
 ## WebAuthn origin validation (`RP_ORIGINS`)
 

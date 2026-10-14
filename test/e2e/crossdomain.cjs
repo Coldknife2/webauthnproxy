@@ -29,7 +29,8 @@ const upstream = http.createServer((q, r) => { r.end(`SECRET user=${q.headers["x
 const proxy = spawn(BIN, [], { env: { ...process.env, DATA_DIR: data, MODE: "forward",
   LOGIN_URL: "http://auth.test.local:8000/_wap/login",
   ALLOWED_HOSTS: "a.siteone.test,*.sitetwo.test",   // no COOKIE_DOMAIN: each site gets its own cookie
-  RP_ID: "test.local", RP_ORIGINS: "http://auth.test.local:8000,http://enroll.test.local:8081", ENROLL_ENABLED: "true" }});
+  RP_ID: "test.local", RP_ORIGINS: "http://auth.test.local:8000,http://enroll.test.local:8081", ENROLL_ENABLED: "true",
+  TRUSTED_PROXIES: "127.0.0.1/32,::1/128", RATE_LIMIT_IP: "500/1m", RATE_LIMIT_GLOBAL: "off" }});
 proxy.stderr.on("data", (d) => log.push(String(d)));
 const until = async (f, ms = 15000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = await f(); if (v) return v; await new Promise((r) => setTimeout(r, 200)); } throw new Error("timeout\n" + log.join("")); };
 

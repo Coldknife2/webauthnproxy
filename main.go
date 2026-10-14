@@ -36,10 +36,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("database: %v", err)
 	}
-	secret, err := loadSecret(cfg.DataDir, cfg.SessionSecret)
+	secret, previous, err := loadSecrets(cfg.DataDir, cfg.SessionSecret, cfg.SessionPrevious)
 	if err != nil {
 		log.Fatalf("session secret: %v", err)
 	}
+	if len(previous) > 0 {
+		log.Printf("session key rotation: %d previous key(s) still accepted for verification", len(previous))
+	}
+	audit := NewAudit(os.Stdout, cfg.AuditLog)
 
 	uv := protocol.VerificationRequired
 	if getenv("USER_VERIFICATION", "required") == "preferred" {
@@ -58,7 +62,7 @@ func main() {
 		log.Fatalf("webauthn: %v", err)
 	}
 
-	if err := watchImports(store, filepath.Join(cfg.DataDir, "import"), cfg.RPID, uv == protocol.VerificationRequired); err != nil {
+	if err := watchImports(store, filepath.Join(cfg.DataDir, "import"), cfg.RPID, uv == protocol.VerificationRequired, audit); err != nil {
 		log.Fatalf("import folder: %v", err)
 	}
 
@@ -66,9 +70,13 @@ func main() {
 		cfg:      cfg,
 		store:    store,
 		wa:       wa,
-		sessions: &Sessions{secret: secret, ttl: cfg.SessionTTL},
+		sessions: NewSessions(secret, previous, cfg.SessionTTL, cfg.IdleTimeout),
 		login:    NewCeremonies[webauthn.SessionData](),
 		enroll:   NewCeremonies[enrollState](),
+
+		audit:       audit,
+		ipLimit:     NewLimiter(cfg.RateLimitIP),
+		globalLimit: NewLimiter(cfg.RateLimitGlobal),
 	}
 
 	servers := []*http.Server{{Addr: cfg.Listen, Handler: app.publicHandler()}}

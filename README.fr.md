@@ -76,6 +76,7 @@ LOGIN_URL=https://auth.com/_wap/login
 ALLOWED_HOSTS=anysite.com,other.org,*.example.net
 RP_ID=auth.com
 RP_ORIGINS=https://auth.com
+TRUSTED_PROXIES=172.18.0.0/16   # plage d'adresses de Traefik : obligatoire, personne d'autre n'est cru sur X-Forwarded-*
 ```
 ```yaml
 # Traefik : à attacher à n'importe quel routeur
@@ -106,7 +107,11 @@ L'outil statique doit être servi en HTTPS sous le domaine `RP_ID` (pas en `file
 | `RP_ID`, `RP_ORIGINS` | – | domaine WebAuthn et origines autorisées (obligatoires) |
 | `LOGIN_URL`, `ALLOWED_HOSTS` | – | mode forward : page de login, liste blanche des sites |
 | `SESSION_SECRET` | généré | clé de signature des cookies, 32 caractères minimum |
-| `SESSION_TTL` | `12h` | durée de session |
+| `TRUSTED_PROXIES` | – | mode forward : CIDR dont les `X-Forwarded-*` sont crus (obligatoire ; jamais de confiance par défaut) |
+| `SESSION_TTL`, `SESSION_IDLE_TIMEOUT` | `12h`, désactivé | durée de session, déconnexion après inactivité |
+| `SESSION_SECRET_PREVIOUS` | – | anciennes clés de signature encore acceptées (rotation sans déconnecter tout le monde) |
+| `RATE_LIMIT_IP`, `RATE_LIMIT_GLOBAL` | `20/1m`, `200/1m` | requêtes de login et d'enrôlement par adresse cliente / au total (`429`) |
+| `AUDIT_LOG` | `true` | événements d'audit JSON sur la sortie standard |
 | `DATA_DIR` | `/data` | `users.json`, `session.key`, `import/` |
 
 Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/configuration.md) · [docs/security.md](docs/security.md) · [docs/troubleshooting.md](docs/troubleshooting.md).
@@ -115,7 +120,7 @@ Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/conf
 
 - **Le login multi-domaines** utilise des tickets à usage unique valables 60 secondes, liés au site cible ; seuls les sites listés dans `ALLOWED_HOSTS` peuvent utiliser le login, et le cookie de chaque site est lié à son hôte.
   Modèle de menace, limites connues et ce qui est testé : [docs/security.md](docs/security.md#cross-domain-login-threat-model) (en anglais).
-- **Derrière Traefik :** laissez `trustForwardHeader` désactivé, gardez `/_wap/verify` hors du routeur public, et **n'exposez jamais les ports 8081 et 8082**.
+- **Derrière Traefik :** réglez `TRUSTED_PROXIES` sur la plage de Traefik, laissez `trustForwardHeader` désactivé, gardez `/_wap/verify` hors du routeur public, et **n'exposez jamais les ports 8081 et 8082**.
   `RP_ORIGINS` est vérifié par rapport à l'origine signée par le navigateur, pas par rapport à `Host` ni `X-Forwarded-*`. Détails : [docs/reverse-proxy.md](docs/reverse-proxy.md).
 
 ## Limites
@@ -123,17 +128,17 @@ Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/conf
 - **Navigateur uniquement.** La connexion exige un navigateur interactif (invite de passkey et redirections). Les applis natives et mobiles, clients d'API, WebDAV/CalDAV et clients de type Vaultwarden ne peuvent pas se connecter et reçoivent `401`.
   Pour les applis qui parlent OIDC, préférez un fournisseur d'identité comme Pocket ID.
 - **Cookies sans état.** Une session est un cookie signé : la révocation se fait **par utilisateur** (« se déconnecter partout »), pas par session, et un cookie volé fonctionne jusqu'à `SESSION_TTL` (12 h par défaut) ou jusqu'à la déconnexion.
-  Changer `SESSION_SECRET` (ou supprimer `data/session.key`) déconnecte tout le monde d'un coup ; les passkeys ne sont pas touchées. [Détails](docs/security.md#session-tokens-hmac-signed-cookies).
+  Faites tourner la clé sans déconnecter personne avec `SESSION_SECRET_PREVIOUS` ; retirer l'ancienne clé déconnecte tout le monde ; les passkeys ne sont pas touchées. [Détails](docs/security.md#session-tokens-hmac-signed-cookies).
 - **Pas de récupération de compte à distance.** Si toutes les passkeys sont perdues, on récupère depuis l'hôte : mettre `users.json` de côté, changer la clé de session, réenrôler avec le jeton d'amorçage.
   **Enrôlez au moins deux passkeys** sur des authenticators différents. [Procédure](docs/enrollment.md#account-recovery-lost-passkeys).
-- **Nouveau, non audité, un seul mainteneur.** Premier commit le 2026-10-14. Pas de limitation de débit, pas de journal d'audit, une seule instance (pas de haute disponibilité), pas de règles par site : toute passkey enrôlée ouvre tous les sites listés.
+- **Nouveau, non audité, un seul mainteneur.** Premier commit le 2026-10-14. Limitation de débit et journal d'audit minimaux (par processus, en mémoire), une seule instance (pas de haute disponibilité), pas de règles par site : toute passkey enrôlée ouvre tous les sites listés.
 
 ## Quand ne PAS l'utiliser
 
 - Vos applis parlent OIDC : utilisez un fournisseur d'identité (Pocket ID, Authelia).
 - Des clients natifs, des API, du WebDAV ou des applis mobiles doivent continuer à fonctionner via les mêmes noms d'hôte.
 - Vous avez besoin de plusieurs utilisateurs avec des groupes, des règles par site ou une administration déléguée.
-- L'environnement est critique ou doit être audité, ou vous avez besoin de haute disponibilité, de révocation par session, de limitation de débit ou de liaison IP/appareil.
+- L'environnement est critique ou doit être audité, ou vous avez besoin de haute disponibilité, de révocation par session ou de liaison IP/appareil.
 - Vous n'avez besoin que d'`auth_request` nginx : [Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) est maintenu depuis 2022 (voir ci-dessous).
 
 ## Pourquoi
@@ -149,12 +154,12 @@ Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/conf
 | Connexion sans nom d'utilisateur | ✅ | ❌ | ✅ |
 | Enrôlement | page protégée par passkey, ou outil statique + import sans redémarrage | page → coller dans `credentials.yml` → redémarrer | admin d'amorçage sur loopback |
 | Sessions | cookie signé, révocation par utilisateur | cookie signé | côté serveur, révocation par session |
-| Limitation de débit | ❌ | ❌ | amorçage seulement |
+| Limitation de débit | ✅ login et enrôlement, par client et global | ❌ | amorçage seulement |
 | Image / tests | GHCR via la CI / unitaires + e2e | Docker Hub / aucun dans le dépôt | `.deb`/`.rpm` / unitaires |
 | Ancienneté | premier commit le 2026-10-14 | depuis le 2022-01-03 | depuis le 2026-04-17 |
 
 **Apporté ici :** un mode proxy intégré, la connexion entre domaines sans rapport avec une liste de sites autorisés, la connexion sans nom d'utilisateur, un enrôlement sans redémarrage, et une suite de bout en bout avec un vrai Traefik.
-**Manquant ici :** révocation par session et délai d'inactivité, limitation de débit, confiance dans les en-têtes transmis seulement depuis des proxys connus, rotation de clé sans déconnecter tout le monde, et surtout l'ancienneté.
+**Manquant ici :** sessions côté serveur avec révocation par session, et surtout l'ancienneté.
 
 ### Les plateformes d'identité font un autre métier
 

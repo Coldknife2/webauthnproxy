@@ -21,72 +21,104 @@ const cookieName = "wap_session"
 // Sessions issues stateless HMAC-signed tokens: session cookies and login tickets.
 // A session is bound to an audience: "" for the login host (or a shared cookie domain), or the
 // host of a protected site for the per-host cookies issued through the ticket exchange.
+//
+// keys[0] signs everything new; the other keys only verify, so the signing key can be rotated
+// without signing everybody out (keep the previous key at least SESSION_TTL).
 type Sessions struct {
-	secret []byte
-	ttl    time.Duration
-	pool   sync.Pool // reusable HMAC hashers
+	keys  [][]byte
+	pools []*sync.Pool // reusable HMAC hashers, one pool per key
+	ttl   time.Duration
+	idle  time.Duration // 0 = no idle timeout
+	now   func() time.Time
+}
+
+// NewSessions returns a Sessions signing with current and also accepting the previous keys.
+func NewSessions(current []byte, previous [][]byte, ttl, idle time.Duration) *Sessions {
+	s := &Sessions{ttl: ttl, idle: idle, now: time.Now}
+	for _, k := range append([][]byte{current}, previous...) {
+		s.keys = append(s.keys, k)
+		s.pools = append(s.pools, &sync.Pool{})
+	}
+	return s
 }
 
 // ticketTTL is how long a login ticket stays valid; it is also single-use.
 const ticketTTL = 60 * time.Second
 
-func loadSecret(dir string, configured []byte) ([]byte, error) {
+// loadSecrets returns the signing key and the previous keys still accepted for verification.
+// The signing key is SESSION_SECRET, or a random key kept in DATA_DIR/session.key. Previous keys come from
+// SESSION_SECRET_PREVIOUS and from DATA_DIR/session.key.previous (rotate with: mv session.key session.key.previous, then restart).
+func loadSecrets(dir string, configured []byte, previousEnv [][]byte) (current []byte, previous [][]byte, err error) {
+	previous = append(previous, previousEnv...)
+	if b, err := os.ReadFile(filepath.Join(dir, "session.key.previous")); err == nil && len(b) >= 32 {
+		previous = append(previous, b)
+	}
 	if len(configured) > 0 {
-		return configured, nil
+		return configured, previous, nil
 	}
 	p := filepath.Join(dir, "session.key")
 	if b, err := os.ReadFile(p); err == nil && len(b) >= 32 {
-		return b, nil
+		return b, previous, nil
 	}
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return b, os.WriteFile(p, b, 0o600)
+	return b, previous, os.WriteFile(p, b, 0o600)
 }
 
 var b64 = base64.RawURLEncoding
 
-// sign separates the token kinds ("s" session, "t" ticket) so one can never be used as the other.
-func (s *Sessions) sign(kind, payload string) string {
-	var sum [sha256.Size]byte
-	return b64.EncodeToString(s.mac(kind, payload, sum[:0]))
-}
-
-// mac computes HMAC-SHA256(kind|payload) with a pooled hasher, appending the sum to dst.
-func (s *Sessions) mac(kind, payload string, dst []byte) []byte {
-	m, _ := s.pool.Get().(hash.Hash)
+// mac computes HMAC-SHA256(kind|payload) with key number i, using a pooled hasher, appending the sum to dst.
+// kind separates the token kinds ("s" session, "t" ticket) so one can never be used as the other.
+func (s *Sessions) mac(i int, kind, payload string, dst []byte) []byte {
+	m, _ := s.pools[i].Get().(hash.Hash)
 	if m == nil {
-		m = hmac.New(sha256.New, s.secret)
+		m = hmac.New(sha256.New, s.keys[i])
 	}
 	m.Reset()
 	io.WriteString(m, kind)
 	io.WriteString(m, "|")
 	io.WriteString(m, payload)
 	dst = m.Sum(dst)
-	s.pool.Put(m)
+	s.pools[i].Put(m)
 	return dst
+}
+
+func (s *Sessions) sign(kind, payload string) string {
+	var sum [sha256.Size]byte
+	return b64.EncodeToString(s.mac(0, kind, payload, sum[:0]))
 }
 
 // token layout: user.aud.exp.gen[.extra…] (user and aud are base64url, so they can never contain the "." separator).
 // gen is the user's session generation: bumping it on the server revokes every token issued before.
-func (s *Sessions) token(kind, user, aud string, ttl time.Duration, gen int64, extra ...string) string {
+func (s *Sessions) token(kind, user, aud string, exp time.Time, gen int64, extra ...string) string {
 	parts := append([]string{b64.EncodeToString([]byte(user)), b64.EncodeToString([]byte(aud)),
-		strconv.FormatInt(time.Now().Add(ttl).Unix(), 10), strconv.FormatInt(gen, 10)}, extra...)
+		strconv.FormatInt(exp.Unix(), 10), strconv.FormatInt(gen, 10)}, extra...)
 	payload := strings.Join(parts, ".")
 	return payload + "." + s.sign(kind, payload)
 }
 
-// parse checks the signature and expiry and returns the payload fields.
+// parse checks the signature (with the current key, then the previous ones) and the expiry and returns the payload fields.
 func (s *Sessions) parse(kind, v string, fields int) ([]string, time.Time, error) {
 	i := strings.LastIndexByte(v, '.')
 	if i < 0 {
 		return nil, time.Time{}, errors.New("format")
 	}
 	payload, sig := v[:i], v[i+1:]
-	var sum [sha256.Size]byte
 	got, err := b64.DecodeString(sig)
-	if err != nil || !hmac.Equal(got, s.mac(kind, payload, sum[:0])) {
+	if err != nil {
+		return nil, time.Time{}, errors.New("signature")
+	}
+	valid := false
+	for k := range s.keys {
+		var sum [sha256.Size]byte
+		if hmac.Equal(got, s.mac(k, kind, payload, sum[:0])) {
+			valid = true
+			break
+		}
+	}
+	if !valid {
 		return nil, time.Time{}, errors.New("signature")
 	}
 	parts := strings.Split(payload, ".")
@@ -94,7 +126,7 @@ func (s *Sessions) parse(kind, v string, fields int) ([]string, time.Time, error
 		return nil, time.Time{}, errors.New("format")
 	}
 	exp, err := strconv.ParseInt(parts[2], 10, 64)
-	if err != nil || time.Now().Unix() > exp {
+	if err != nil || s.now().Unix() > exp {
 		return nil, time.Time{}, errors.New("expired")
 	}
 	return parts, time.Unix(exp, 0), nil
@@ -105,32 +137,71 @@ func decode(seg string) (string, error) {
 	return string(b), err
 }
 
+// Session is the content of a verified session token.
+type Session struct {
+	User, Aud string
+	Gen       int64
+	Exp, Seen time.Time // absolute expiry; last activity recorded in the token
+}
+
+// session token layout: user.aud.exp.gen.seen (seen = last activity, unix seconds).
+const sessionFields = 5
+
 // New returns a session token for user, bound to audience aud and to the user's session generation.
 func (s *Sessions) New(user, aud string, gen int64) string {
-	return s.token("s", user, aud, s.ttl, gen)
+	now := s.now()
+	return s.token("s", user, aud, now.Add(s.ttl), gen, strconv.FormatInt(now.Unix(), 10))
+}
+
+// Renew returns the same session with its last-activity time moved to now (the absolute expiry is unchanged).
+func (s *Sessions) Renew(se Session) string {
+	return s.token("s", se.User, se.Aud, se.Exp, se.Gen, strconv.FormatInt(s.now().Unix(), 10))
+}
+
+// VerifySession checks the signature, the absolute expiry and, when configured, the idle timeout.
+func (s *Sessions) VerifySession(v string) (Session, error) {
+	p, exp, err := s.parse("s", v, sessionFields)
+	if err != nil {
+		return Session{}, err
+	}
+	se := Session{Exp: exp}
+	if se.User, err = decode(p[0]); err != nil {
+		return Session{}, err
+	}
+	if se.Aud, err = decode(p[1]); err != nil {
+		return Session{}, err
+	}
+	if se.Gen, err = strconv.ParseInt(p[3], 10, 64); err != nil {
+		return Session{}, err
+	}
+	seen, err := strconv.ParseInt(p[4], 10, 64)
+	if err != nil {
+		return Session{}, err
+	}
+	se.Seen = time.Unix(seen, 0)
+	if s.idle > 0 && s.now().Sub(se.Seen) > s.idle {
+		return Session{}, errors.New("idle")
+	}
+	return se, nil
+}
+
+// NeedsRenewal reports whether the session should be re-issued with a fresh last-activity time:
+// only when an idle timeout is set and a quarter of it has passed, so that most requests set no cookie.
+func (s *Sessions) NeedsRenewal(se Session) bool {
+	return s.idle > 0 && s.now().Sub(se.Seen) > s.idle/4
 }
 
 // Verify returns the user name, audience and generation if the session token is valid.
 func (s *Sessions) Verify(v string) (user, aud string, gen int64, err error) {
-	p, _, err := s.parse("s", v, 4)
-	if err != nil {
-		return "", "", 0, err
-	}
-	if user, err = decode(p[0]); err != nil {
-		return "", "", 0, err
-	}
-	if aud, err = decode(p[1]); err != nil {
-		return "", "", 0, err
-	}
-	gen, err = strconv.ParseInt(p[3], 10, 64)
-	return user, aud, gen, err
+	se, err := s.VerifySession(v)
+	return se.User, se.Aud, se.Gen, err
 }
 
 // NewTicket returns a short-lived, single-use ticket granting a session on host aud.
 func (s *Sessions) NewTicket(user, aud string, gen int64) string {
 	n := make([]byte, 16)
 	_, _ = rand.Read(n)
-	return s.token("t", user, aud, ticketTTL, gen, b64.EncodeToString(n))
+	return s.token("t", user, aud, s.now().Add(ticketTTL), gen, b64.EncodeToString(n))
 }
 
 // VerifyTicket returns the ticket's user, audience, generation, nonce and expiry if it is valid.
@@ -188,6 +259,9 @@ type ceremony[T any] struct {
 	exp time.Time
 }
 
+// maxCeremonies bounds the memory used by unfinished ceremonies.
+const maxCeremonies = 10000
+
 func NewCeremonies[T any]() *Ceremonies[T] { return &Ceremonies[T]{m: map[string]ceremony[T]{}} }
 
 func (c *Ceremonies[T]) Put(v T) string {
@@ -201,6 +275,16 @@ func (c *Ceremonies[T]) Put(v T) string {
 		if now.After(x.exp) {
 			delete(c.m, k)
 		}
+	}
+	if len(c.m) >= maxCeremonies { // memory bound if rate limiting is disabled: drop the one closest to expiry
+		var oldest string
+		var oe time.Time
+		for k, x := range c.m {
+			if oldest == "" || x.exp.Before(oe) {
+				oldest, oe = k, x.exp
+			}
+		}
+		delete(c.m, oldest)
 	}
 	c.m[id] = ceremony[T]{v, now.Add(5 * time.Minute)}
 	return id

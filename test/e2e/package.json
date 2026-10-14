@@ -2,6 +2,14 @@
   "name": "webauthnproxy-e2e",
   "private": true,
   "description": "End-to-end tests (Chromium + virtual authenticator)",
-  "scripts": { "test": "node e2e.cjs && node forward.cjs && node crossdomain.cjs", "test:proxy": "node e2e.cjs", "test:forward": "node forward.cjs", "test:crossdomain": "node crossdomain.cjs" },
-  "devDependencies": { "playwright": "1.56.1" }
+  "scripts": {
+    "test": "node e2e.cjs && node ratelimit.cjs && node forward.cjs && node crossdomain.cjs",
+    "test:proxy": "node e2e.cjs",
+    "test:forward": "node forward.cjs",
+    "test:crossdomain": "node crossdomain.cjs",
+    "test:ratelimit": "node ratelimit.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
 }

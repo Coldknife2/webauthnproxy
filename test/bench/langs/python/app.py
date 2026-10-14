@@ -24,7 +24,7 @@ def check(h: dict):
     if not hmac.compare_digest(want, b64(sig)):
         return None
     f = payload.split(".")
-    if len(f) != 4 or int(f[2]) < time.time() or b64(f[1]).decode() != host:
+    if len(f) != 5 or int(f[2]) < time.time() or b64(f[1]).decode() != host:
         return None
     user = b64(f[0]).decode()
     return user if user in USERS else None

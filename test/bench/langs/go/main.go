@@ -36,7 +36,7 @@ func check(r *http.Request) string {
 		return ""
 	}
 	f := strings.Split(payload, ".")
-	if len(f) != 4 {
+	if len(f) != 5 {
 		return ""
 	}
 	if exp, err := strconv.ParseInt(f[2], 10, 64); err != nil || exp < time.Now().Unix() || dec(f[1]) != host {

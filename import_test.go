@@ -92,7 +92,7 @@ func TestImportDirRenamesAndDedups(t *testing.T) {
 	write("a.json", importJSON(t, "remi", "example.com", flagsUPUVAT))
 	write("b.json", importJSON(t, "remi", "example.com", flagsUPUVAT)) // same credential -> duplicate
 	write("c.json", []byte("not json"))
-	importDir(store, dir, "example.com", true)
+	importDir(store, dir, "example.com", true, nil)
 	if store.CredentialCount() != 1 {
 		t.Fatalf("expected 1 passkey, got %d", store.CredentialCount())
 	}

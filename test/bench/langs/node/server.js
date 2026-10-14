@@ -16,7 +16,7 @@ function check(h) {
   const got = Buffer.from(tok.slice(i + 1), "base64url");
   if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) return null;
   const f = payload.split(".");
-  if (f.length !== 4 || Number(f[2]) < Date.now() / 1000 || b64(f[1]) !== host) return null;
+  if (f.length !== 5 || Number(f[2]) < Date.now() / 1000 || b64(f[1]) !== host) return null;
   const user = b64(f[0]);
   return users.has(user) ? user : null;
 }

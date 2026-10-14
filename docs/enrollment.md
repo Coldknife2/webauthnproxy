@@ -66,13 +66,13 @@ The service refuses to delete the last passkey, so you cannot lock yourself out 
 
 1. Stop the container.
 2. Move the user database aside: `mv data/users.json data/users.json.lost`.
-3. **Rotate the session key** so no old cookie can come back to life: delete `data/session.key`, or change `SESSION_SECRET`.
+3. **Revoke the old cookies**: delete `data/session.key` (and any `data/session.key.previous`), or change `SESSION_SECRET` and clear `SESSION_SECRET_PREVIOUS`, so no former key is accepted.
    (Revocation state lives in `users.json`; a recreated user starts again at generation 0, which would make an old, unexpired cookie for the same user name valid again.)
 4. Start again with `ENROLL_ENABLED=true` and read `Enrollment bootstrap token: …` in the logs.
 5. Open the enrollment page, enter the token, create the first passkey, then a second one. Restart without `ENROLL_ENABLED`.
 
 Alternative without opening port 8081: create a passkey with the static tool on a new authenticator and drop the JSON file into `data/import/` (step 3 still applies).
 
-**Same caution when restoring a backup of `users.json`:** a copy older than a sign-out contains the older session generation, so cookies revoked by that sign-out work again. Rotate the session key after a restore.
+**Same caution when restoring a backup of `users.json`:** a copy older than a sign-out contains the older session generation, so cookies revoked by that sign-out work again. Replace the session key (without keeping the old one as previous) after a restore.
 
 *What is tested:* the empty-database bootstrap (first passkey with the token) and the import path are covered by the unit and e2e tests. The file-deletion procedure above reaches the same empty state but is not exercised as a scenario of its own, and the cookie-revival caveat is documented, not tested.

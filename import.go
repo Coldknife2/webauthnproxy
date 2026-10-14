@@ -100,20 +100,22 @@ func parseImport(raw []byte, rpID string, requireUV bool) (*User, *webauthn.Cred
 
 // importDir processes the *.json files dropped into dir: an accepted file is renamed to
 // .imported, a refused one to .rejected (the reason is in the logs).
-func importDir(store *Store, dir, rpID string, requireUV bool) {
+func importDir(store *Store, dir, rpID string, requireUV bool, audit *Audit) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
-		err := importOne(store, p, rpID, requireUV)
+		user, cred, err := importOne(store, p, rpID, requireUV)
 		suffix := ".imported"
 		if err != nil {
 			suffix = ".rejected"
 			log.Printf("import %s rejected: %v", e.Name(), err)
+			audit.Event("enroll_failure", "via", "import", "file", e.Name(), "reason", err.Error())
 		} else {
 			log.Printf("import %s: passkey added", e.Name())
+			audit.Event("enroll_success", "via", "import", "user", user, "credential", credTag(cred), "file", e.Name())
 		}
 		if err := os.Rename(p, p+suffix); err != nil {
 			log.Printf("import %s: cannot rename: %v", e.Name(), err)
@@ -121,33 +123,33 @@ func importDir(store *Store, dir, rpID string, requireUV bool) {
 	}
 }
 
-func importOne(store *Store, path, rpID string, requireUV bool) error {
+func importOne(store *Store, path, rpID string, requireUV bool) (user string, credID []byte, err error) {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	if fi.Size() > maxImportSize {
-		return errors.New("file too large")
+		return "", nil, errors.New("file too large")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-	user, cred, err := parseImport(raw, rpID, requireUV)
+	u, cred, err := parseImport(raw, rpID, requireUV)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-	return store.AddCredential(store.GetOrNew(user.Name), cred)
+	return u.Name, cred.ID, store.AddCredential(store.GetOrNew(u.Name), cred)
 }
 
 // watchImports polls the import folder (at startup, then every 5 s).
-func watchImports(store *Store, dir, rpID string, requireUV bool) error {
+func watchImports(store *Store, dir, rpID string, requireUV bool, audit *Audit) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	go func() {
 		for {
-			importDir(store, dir, rpID, requireUV)
+			importDir(store, dir, rpID, requireUV, audit)
 			time.Sleep(5 * time.Second)
 		}
 	}()

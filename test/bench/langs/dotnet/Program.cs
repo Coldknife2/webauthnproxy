@@ -23,7 +23,7 @@ app.MapGet("/_wap/verify", (HttpContext c) =>
     try { got = Base64Url.DecodeFromChars(tok.AsSpan(i + 1)); } catch { return Results.StatusCode(401); }
     if (!CryptographicOperations.FixedTimeEquals(want, got)) return Results.StatusCode(401);
     var f = payload.Split('.');
-    if (f.Length != 4 || long.Parse(f[2]) < DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return Results.StatusCode(401);
+    if (f.Length != 5 || long.Parse(f[2]) < DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return Results.StatusCode(401);
     if (Encoding.UTF8.GetString(Base64Url.DecodeFromChars(f[1])) != host) return Results.StatusCode(401);
     string user = Encoding.UTF8.GetString(Base64Url.DecodeFromChars(f[0]));
     if (user != "bench") return Results.StatusCode(401); // user lookup (in-memory set of one)

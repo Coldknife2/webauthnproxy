@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func postLogout(a *App, cookie string) *httptest.ResponseRecorder {
@@ -101,7 +102,7 @@ func TestTicketIssuedBeforeLogoutIsRefused(t *testing.T) {
 }
 
 func TestTokenTamperingIsDetected(t *testing.T) {
-	s := &Sessions{secret: []byte("0123456789abcdef0123456789abcdef"), ttl: 3600e9}
+	s := NewSessions([]byte("0123456789abcdef0123456789abcdef"), nil, time.Hour, 0)
 	tok := s.New("remi", "", 0)
 	parts := strings.Split(tok, ".")
 	forged := append([]string{b64.EncodeToString([]byte("admin"))}, parts[1:]...) // other user, same signature

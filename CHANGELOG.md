@@ -4,6 +4,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ## [Unreleased]
 
+### Breaking
+- **Forward mode requires `TRUSTED_PROXIES`** (CIDRs of Traefik). `X-Forwarded-*` is believed only from those addresses and `/_wap/verify` answers `403` to anyone else. There is no default.
+- The session token gained a last-activity field (`user.aud.exp.gen.seen.signature`): existing cookies are refused once, users sign in again.
+
+### Security
+- Rate limiting on login and enrolment endpoints, per client address (IPv6 grouped by /64) and globally; `429` with `Retry-After`. `RATE_LIMIT_IP` (default `20/1m`), `RATE_LIMIT_GLOBAL` (default `200/1m`), `off` disables.
+- Session key rotation: `SESSION_SECRET_PREVIOUS` / `data/session.key.previous` keep older keys valid for verification only.
+- Idle timeout without server state (`SESSION_IDLE_TIMEOUT`); with Traefik it needs `addAuthCookiesToResponse: [wap_session]`.
+- Proxy mode removes forged `X-Forwarded-*`/`Forwarded` headers from untrusted clients; `COOKIE_SECURE` (`auto`, `true`, `false`).
+- JSON audit log on standard output (`AUDIT_LOG`): sign-in success/failure, enrolment, credential deletion, sign-out, ticket events, denied hosts and callers. No secrets in it.
+
 ### Documentation
 - README restructured: security notes, limitations, "when not to use it"; prior art cited (Quiq/webauthn_proxy, passkey-forwardauth and others, dated, with sources) in `docs/alternatives.md`, with an experiment showing Tinyauth v5.2.0 does not cover unrelated domains.
 - New `docs/reverse-proxy.md` (forwarded headers, `RP_ORIGINS`, what must stay private); cross-domain threat model and test coverage in `docs/security.md`; account recovery procedure; performance figures presented as an experiment.

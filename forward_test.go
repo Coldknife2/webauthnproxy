@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
@@ -48,7 +49,8 @@ func forwardApp(t testing.TB) *App {
 	a := testApp(t)
 	lu, _ := url.Parse("https://auth.com/_wap/login")
 	a.cfg = &Config{Mode: "forward", LoginURL: lu, AllowedHosts: []string{"anysite.com", "other.org"},
-		SessionTTL: time.Hour, UserHeader: "X-Authenticated-User"}
+		SessionTTL: time.Hour, UserHeader: "X-Authenticated-User", CookieSecure: "auto",
+		TrustedProxies: mustTrust("192.0.2.0/24")} // httptest requests come from 192.0.2.1
 	return a
 }
 
@@ -195,4 +197,12 @@ func TestCallbackNeverRedirectsOffSite(t *testing.T) {
 			t.Errorf("next=%q -> %d %q, want a redirect to the site root", next, w.Code, w.Header().Get("Location"))
 		}
 	}
+}
+
+func mustTrust(s string) []netip.Prefix {
+	p, err := ParseTrustedProxies(s)
+	if err != nil {
+		panic(err)
+	}
+	return p
 }

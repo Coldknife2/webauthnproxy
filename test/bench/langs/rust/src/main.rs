@@ -19,7 +19,7 @@ fn check(h: &HeaderMap) -> Option<String> {
     mac.update(payload.as_bytes());
     mac.verify_slice(&B64.decode(sig).ok()?).ok()?; // constant-time
     let mut p = payload.split('.');
-    let (user, aud, exp, _gen) = (p.next()?, p.next()?, p.next()?, p.next()?);
+    let (user, aud, exp, _gen, _seen) = (p.next()?, p.next()?, p.next()?, p.next()?, p.next()?);
     if p.next().is_some() || exp.parse::<u64>().ok()? < SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() {
         return None;
     }

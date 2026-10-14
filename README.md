@@ -74,6 +74,7 @@ LOGIN_URL=https://auth.com/_wap/login
 ALLOWED_HOSTS=anysite.com,other.org,*.example.net
 RP_ID=auth.com
 RP_ORIGINS=https://auth.com
+TRUSTED_PROXIES=172.18.0.0/16   # Traefik's address range: required, nobody else is believed on X-Forwarded-*
 ```
 ```yaml
 # Traefik: attach to any router
@@ -104,7 +105,11 @@ The static tool must be served over HTTPS under your `RP_ID` domain (not `file:/
 | `RP_ID`, `RP_ORIGINS` | – | WebAuthn domain and allowed origins (required) |
 | `LOGIN_URL`, `ALLOWED_HOSTS` | – | forward mode: login page, sites shortlist |
 | `SESSION_SECRET` | generated | cookie-signing key, 32 characters minimum |
-| `SESSION_TTL` | `12h` | session lifetime |
+| `TRUSTED_PROXIES` | – | forward mode: CIDRs whose `X-Forwarded-*` are believed (required; never trusted by default) |
+| `SESSION_TTL`, `SESSION_IDLE_TIMEOUT` | `12h`, off | session lifetime, sign-out after inactivity |
+| `SESSION_SECRET_PREVIOUS` | – | former signing keys still accepted (rotation without signing everyone out) |
+| `RATE_LIMIT_IP`, `RATE_LIMIT_GLOBAL` | `20/1m`, `200/1m` | login and enrolment requests per client address / in total (`429`) |
+| `AUDIT_LOG` | `true` | JSON audit events on standard output |
 | `DATA_DIR` | `/data` | `users.json`, `session.key`, `import/` |
 
 All variables, ports, security model, troubleshooting: [docs/configuration.md](docs/configuration.md) · [docs/security.md](docs/security.md) · [docs/troubleshooting.md](docs/troubleshooting.md).
@@ -113,7 +118,7 @@ All variables, ports, security model, troubleshooting: [docs/configuration.md](d
 
 - **Cross-domain login** uses single-use tickets valid for 60 seconds, bound to the target site; only sites listed in `ALLOWED_HOSTS` can use the login, and each site's cookie is bound to its host.
   Threat model, known gaps and what is tested: [docs/security.md](docs/security.md#cross-domain-login-threat-model).
-- **Behind Traefik:** keep `trustForwardHeader` off, keep `/_wap/verify` off the public router, and **never expose ports 8081 and 8082**.
+- **Behind Traefik:** set `TRUSTED_PROXIES` to Traefik's range, keep `trustForwardHeader` off, keep `/_wap/verify` off the public router, and **never expose ports 8081 and 8082**.
   `RP_ORIGINS` is checked against the origin the browser signed, not against `Host` or `X-Forwarded-*`. Details: [docs/reverse-proxy.md](docs/reverse-proxy.md).
 
 ## Limitations
@@ -121,17 +126,17 @@ All variables, ports, security model, troubleshooting: [docs/configuration.md](d
 - **Browser only.** Signing in needs an interactive browser (passkey prompt and redirects). Native and mobile apps, API clients, WebDAV/CalDAV and Vaultwarden-style clients cannot sign in and get `401`.
   For apps that speak OIDC, prefer an identity provider such as Pocket ID.
 - **Stateless cookies.** A session is a signed cookie: revocation is **per user** ("sign out everywhere"), not per session, and a stolen cookie works until `SESSION_TTL` (12 h by default) or until the user signs out.
-  Changing `SESSION_SECRET` (or deleting `data/session.key`) signs everybody out at once; passkeys are not affected. [Details](docs/security.md#session-tokens-hmac-signed-cookies).
+  Rotate the key without signing anyone out with `SESSION_SECRET_PREVIOUS`; dropping the old key signs everybody out; passkeys are not affected. [Details](docs/security.md#session-tokens-hmac-signed-cookies).
 - **No remote account recovery.** If every passkey is lost, you recover from the host: move `users.json` aside, rotate the session key, enroll again with the bootstrap token.
   **Enroll at least two passkeys** on different authenticators. [Procedure](docs/enrollment.md#account-recovery-lost-passkeys).
-- **New, unaudited, one maintainer.** First commit 2026-10-14. No rate limiting, no audit log, a single instance (no high availability), no per-site rules: any enrolled passkey opens every listed site.
+- **New, unaudited, one maintainer.** First commit 2026-10-14. Rate limiting and the audit log are minimal (per process, in memory), a single instance (no high availability), no per-site rules: any enrolled passkey opens every listed site.
 
 ## When not to use it
 
 - Your apps speak OIDC: use an identity provider (Pocket ID, Authelia).
 - Native clients, APIs, WebDAV or mobile apps must keep working through the same hostnames.
 - You need several users with groups, per-site rules or delegated administration.
-- The environment is critical or must be audited, or you need high availability, per-session revocation, rate limiting or IP/device binding.
+- The environment is critical or must be audited, or you need high availability, per-session revocation or IP/device binding.
 - You only need nginx `auth_request`: [Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) has been maintained since 2022 (see below).
 
 ## Why
@@ -147,12 +152,12 @@ All variables, ports, security model, troubleshooting: [docs/configuration.md](d
 | Username-less login | ✅ | ❌ | ✅ |
 | Enrolling | passkey-protected page, or static tool + import without restart | page → paste into `credentials.yml` → restart | loopback bootstrap admin |
 | Sessions | signed cookie, revoked per user | signed cookie | server-side, per-session revocation |
-| Rate limiting | ❌ | ❌ | bootstrap only |
+| Rate limiting | ✅ login and enrolment, per client and global | ❌ | bootstrap only |
 | Image / tests | GHCR from CI / unit + e2e | Docker Hub / none in repo | `.deb`/`.rpm` / unit |
 | Time in use | first commit 2026-10-14 | since 2022-01-03 | since 2026-04-17 |
 
 **Added here:** a built-in proxy mode, login across unrelated domains with a list of allowed sites, username-less login, an enrollment path that needs no restart, and an end-to-end suite with a real Traefik.
-**Missing here:** per-session revocation and idle timeout, rate limiting, trusting forwarded headers only from known proxies, key rotation without signing everybody out, and above all time in use.
+**Missing here:** per-session revocation, server-side sessions, and above all time in use.
 
 ### Identity platforms do a different job
 

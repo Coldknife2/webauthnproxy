@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -30,6 +31,14 @@ type Config struct {
 	SessionTTL    time.Duration // SESSION_TTL
 	PreserveHost  bool          // PRESERVE_HOST: forward the client's Host to the upstream
 	UserHeader    string        // USER_HEADER: header carrying the user name to the upstream
+
+	TrustedProxies  []netip.Prefix // TRUSTED_PROXIES: proxies whose X-Forwarded-* headers are believed (never by default)
+	CookieSecure    string         // COOKIE_SECURE: "auto" (default), "true" or "false"
+	RateLimitIP     RateSpec       // RATE_LIMIT_IP: login/enrollment requests per client address (default 20/1m)
+	RateLimitGlobal RateSpec       // RATE_LIMIT_GLOBAL: login/enrollment requests in total (default 200/1m)
+	SessionPrevious [][]byte       // SESSION_SECRET_PREVIOUS: former signing keys still accepted (rotation)
+	IdleTimeout     time.Duration  // SESSION_IDLE_TIMEOUT: sign out after this long without activity (0 = off)
+	AuditLog        bool           // AUDIT_LOG: JSON audit events on standard output (default on)
 }
 
 func splitHost(hp string) (host, port string) {
@@ -159,5 +168,37 @@ func LoadConfig() (*Config, error) {
 		}
 		c.SessionSecret = []byte(s)
 	}
+	for _, k := range strings.Split(os.Getenv("SESSION_SECRET_PREVIOUS"), ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			if len(k) < 32 {
+				return nil, fmt.Errorf("SESSION_SECRET_PREVIOUS: every key needs 32 characters minimum")
+			}
+			c.SessionPrevious = append(c.SessionPrevious, []byte(k))
+		}
+	}
+
+	idle, err := time.ParseDuration(getenv("SESSION_IDLE_TIMEOUT", "0"))
+	if err != nil || idle < 0 || (idle > 0 && idle >= c.SessionTTL) {
+		return nil, fmt.Errorf("invalid SESSION_IDLE_TIMEOUT (a duration shorter than SESSION_TTL, or 0 to disable)")
+	}
+	c.IdleTimeout = idle
+
+	if c.TrustedProxies, err = ParseTrustedProxies(os.Getenv("TRUSTED_PROXIES")); err != nil {
+		return nil, err
+	}
+	if c.Mode == "forward" && len(c.TrustedProxies) == 0 {
+		return nil, fmt.Errorf("forward mode needs TRUSTED_PROXIES: the address range of Traefik, the only caller allowed to set X-Forwarded-* (e.g. 172.18.0.0/16)")
+	}
+	c.CookieSecure = strings.ToLower(getenv("COOKIE_SECURE", "auto"))
+	if c.CookieSecure != "auto" && c.CookieSecure != "true" && c.CookieSecure != "false" {
+		return nil, fmt.Errorf("invalid COOKIE_SECURE %q (auto, true or false)", c.CookieSecure)
+	}
+	if c.RateLimitIP, err = ParseRate(getenv("RATE_LIMIT_IP", "20/1m")); err != nil {
+		return nil, fmt.Errorf("RATE_LIMIT_IP: %w", err)
+	}
+	if c.RateLimitGlobal, err = ParseRate(getenv("RATE_LIMIT_GLOBAL", "200/1m")); err != nil {
+		return nil, fmt.Errorf("RATE_LIMIT_GLOBAL: %w", err)
+	}
+	c.AuditLog = !strings.EqualFold(getenv("AUDIT_LOG", "true"), "false")
 	return c, nil
 }

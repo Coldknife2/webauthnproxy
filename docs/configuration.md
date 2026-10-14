@@ -20,8 +20,15 @@ Everything is set through environment variables.
 | `TOOL_ENABLED` | `false` | Enable the static enrollment tool |
 | `TOOL_LISTEN` | `:8082` | Static tool port |
 | `DATA_DIR` | `/data` | `users.json`, `session.key`, `import/` folder (mount as a volume) |
-| `SESSION_SECRET` | generated | Cookie-signing secret, **32 characters minimum** (`openssl rand -base64 48`); otherwise 32 random bytes are generated in `DATA_DIR/session.key`. Changing it signs everybody out |
-| `SESSION_TTL` | `12h` | Session lifetime |
+| `SESSION_SECRET` | generated | Cookie-signing secret, **32 characters minimum** (`openssl rand -base64 48`); otherwise 32 random bytes are generated in `DATA_DIR/session.key`. Changing it without `SESSION_SECRET_PREVIOUS` signs everybody out |
+| `SESSION_SECRET_PREVIOUS` | – | Former signing keys, comma-separated, still accepted for verification so a rotation signs nobody out. Also read from `DATA_DIR/session.key.previous`. Remove them after `SESSION_TTL` |
+| `SESSION_TTL` | `12h` | Absolute session lifetime |
+| `SESSION_IDLE_TIMEOUT` | `0` (off) | Sign out after this long without activity (e.g. `30m`); shorter than `SESSION_TTL`. In forward mode add `addAuthCookiesToResponse=wap_session` to the Traefik middleware, otherwise active users are signed out too ([security.md](security.md#idle-timeout)) |
+| `TRUSTED_PROXIES` | – | Addresses or CIDR ranges of the reverse proxies whose `X-Forwarded-*` headers are believed (`172.18.0.0/16,10.0.0.5`). **Empty by default: no header is trusted.** Required in forward mode |
+| `COOKIE_SECURE` | `auto` | `auto`: `Secure` when the connection is HTTPS or a trusted proxy says so (and the login URL is https); `true` always; `false` never |
+| `RATE_LIMIT_IP` | `20/1m` | Login and enrollment requests allowed per client address (`N/duration`, e.g. `60/1h`; `0` or `off` disables). Answers `429` with `Retry-After` |
+| `RATE_LIMIT_GLOBAL` | `200/1m` | The same, for all clients together |
+| `AUDIT_LOG` | `true` | Security events as JSON lines on standard output ([security.md](security.md#audit-log)); `false` disables |
 | `USER_VERIFICATION` | `required` | `preferred` to accept authenticators without PIN/biometrics |
 | `PRESERVE_HOST` | `false` | Proxy mode: forward the client's `Host` to the upstream |
 | `USER_HEADER` | `X-Authenticated-User` | Header carrying the user |

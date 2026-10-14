@@ -15,6 +15,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -37,6 +38,10 @@ type App struct {
 	enroll   *Ceremonies[enrollState]
 
 	seen Seen // used ticket nonces
+
+	audit       *Audit   // nil = audit log disabled
+	ipLimit     *Limiter // login and enrollment requests per client address
+	globalLimit *Limiter // login and enrollment requests in total
 
 	bootMu sync.Mutex
 	boot   string // enrollment bootstrap token (empty database)
@@ -62,8 +67,26 @@ func (a *App) staticPage(name string) http.HandlerFunc {
 	}
 }
 
-func isSecure(r *http.Request) bool {
-	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+// limited applies the per-client and global rate limits to a login or enrollment route (429 when exceeded).
+func (a *App) limited(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := a.clientIP(r)
+		scope := "client"
+		ok, retry := a.ipLimit.Allow(rateKey(ip))
+		if ok {
+			if ok, retry = a.globalLimit.Allow(""); !ok {
+				scope = "global"
+			}
+		}
+		if !ok {
+			secs := int(retry.Seconds()) + 1
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+			a.auditReq(r, "rate_limited", "scope", scope)
+			jsonErr(w, http.StatusTooManyRequests, "too many requests, retry in "+strconv.Itoa(secs)+" s")
+			return
+		}
+		next(w, r)
+	})
 }
 
 // ---------------------------------------------------------------- public (proxy)
@@ -74,8 +97,8 @@ func (a *App) publicHandler() http.Handler {
 	mux.HandleFunc("GET "+prefix+"/app.js", a.staticPage("app.js"))
 	mux.HandleFunc("GET "+prefix+"/login.js", a.staticPage("login.js"))
 	mux.HandleFunc("GET "+prefix+"/i18n.js", a.staticPage("i18n.js"))
-	mux.HandleFunc("POST "+prefix+"/login/begin", a.loginBegin)
-	mux.HandleFunc("POST "+prefix+"/login/finish", a.loginFinish)
+	mux.Handle("POST "+prefix+"/login/begin", a.limited(a.loginBegin))
+	mux.Handle("POST "+prefix+"/login/finish", a.limited(a.loginFinish))
 	mux.HandleFunc("POST "+prefix+"/logout", a.logout)
 	if a.cfg.Mode == "forward" {
 		mux.HandleFunc(prefix+"/verify", a.verify)
@@ -92,7 +115,7 @@ func (a *App) cookie(r *http.Request, value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
 		Name: cookieName, Value: value, Path: "/", Domain: a.cfg.CookieDomain,
 		HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: maxAge,
-		Secure: isSecure(r) || (a.cfg.LoginURL != nil && a.cfg.LoginURL.Scheme == "https"),
+		Secure: a.secureLogin(r),
 	}
 }
 
@@ -100,7 +123,7 @@ func (a *App) cookie(r *http.Request, value string, maxAge int) *http.Cookie {
 func (a *App) hostCookie(r *http.Request, value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
 		Name: cookieName, Value: value, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: maxAge, Secure: isSecure(r),
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: maxAge, Secure: a.secureSite(r),
 	}
 }
 
@@ -109,17 +132,21 @@ func (a *App) ssoURL() string {
 }
 
 // verify is Traefik's forwardAuth endpoint: 2xx = allowed, otherwise the response is returned to the client.
-// Traefik passes the original request in X-Forwarded-* headers, and the original cookies.
+// Traefik passes the original request in X-Forwarded-* headers, and the original cookies. Those headers are only
+// believed when the caller is a declared proxy (TRUSTED_PROXIES): anyone else could forge the host, scheme and URI.
 func (a *App) verify(w http.ResponseWriter, r *http.Request) {
+	if !a.fromTrusted(r) {
+		a.auditReq(r, "untrusted_proxy", "peer", r.RemoteAddr)
+		http.Error(w, "caller is not a trusted proxy", http.StatusForbidden)
+		return
+	}
 	host := strings.ToLower(r.Header.Get("X-Forwarded-Host"))
 	if !a.cfg.HostAllowed(host) {
+		a.auditReq(r, "host_denied", "site", host)
 		http.Error(w, "host not allowed", http.StatusForbidden)
 		return
 	}
-	proto := r.Header.Get("X-Forwarded-Proto")
-	if proto == "" {
-		proto = "http"
-	}
+	proto := a.scheme(r)
 	uri := r.Header.Get("X-Forwarded-Uri")
 	if strings.HasPrefix(uri, prefix+"/") { // control paths only; ordinary requests skip URL parsing
 		if p, err := url.Parse(uri); err == nil {
@@ -129,10 +156,8 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 				return
 			case prefix + "/logout": // POST: sign out everywhere; any other method: only forget this site's cookie
 				if r.Header.Get("X-Forwarded-Method") == http.MethodPost {
-					if name, aud, ok := a.session(r); ok && (aud == host || (aud == "" && a.cfg.InCookieDomain(host))) {
-						if err := a.store.Revoke(name); err != nil {
-							log.Printf("sign-out: cannot persist revocation: %v", err)
-						}
+					if se, ok := a.sessionFor(r); ok && (se.Aud == host || (se.Aud == "" && a.cfg.InCookieDomain(host))) {
+						a.revoke(r, se.User, "site", host)
 					}
 				}
 				http.SetCookie(w, a.hostCookie(r, "", -1))
@@ -144,8 +169,9 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 	}
 	// A cookie is valid for this site if it was issued for this very host, or if it is the shared
 	// login-host cookie and the site lies within COOKIE_DOMAIN.
-	if name, aud, ok := a.session(r); ok && (aud == host || (aud == "" && a.cfg.InCookieDomain(host))) {
-		w.Header().Set(a.cfg.UserHeader, name)
+	if se, ok := a.sessionFor(r); ok && (se.Aud == host || (se.Aud == "" && a.cfg.InCookieDomain(host))) {
+		a.refresh(w, r, se)
+		w.Header().Set(a.cfg.UserHeader, se.User)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -161,11 +187,18 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 func (a *App) callback(w http.ResponseWriter, r *http.Request, host string, q url.Values) {
 	user, aud, gen, nonce, exp, err := a.sessions.VerifyTicket(q.Get("ticket"))
 	if err != nil || aud != host {
+		a.auditReq(r, "ticket_rejected", "site", host, "reason", "invalid, expired or issued for another site")
 		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
 		return
 	}
 	// a ticket issued before a sign-out ("revocation") must not open a new session
-	if cur, ok := a.store.Gen(user); !ok || cur != gen || !a.seen.Mark(nonce, exp) {
+	if cur, ok := a.store.Gen(user); !ok || cur != gen {
+		a.auditReq(r, "ticket_rejected", "site", host, "user", user, "reason", "revoked")
+		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
+		return
+	}
+	if !a.seen.Mark(nonce, exp) {
+		a.auditReq(r, "ticket_rejected", "site", host, "user", user, "reason", "replay")
 		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
 		return
 	}
@@ -173,10 +206,8 @@ func (a *App) callback(w http.ResponseWriter, r *http.Request, host string, q ur
 	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, `/\`) {
 		next = "/"
 	}
-	proto := "http"
-	if isSecure(r) {
-		proto = "https"
-	}
+	proto := a.scheme(r)
+	a.auditReq(r, "site_login", "user", user, "site", host)
 	http.SetCookie(w, a.hostCookie(r, a.sessions.New(user, host, gen), int(a.cfg.SessionTTL.Seconds())))
 	// Absolute URL: Traefik resolves a relative Location against the auth service's own address.
 	http.Redirect(w, r, proto+"://"+host+next, http.StatusFound)
@@ -201,6 +232,7 @@ func (a *App) sso(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	gen, _ := a.store.Gen(name)
+	a.auditReq(r, "ticket_issued", "user", name, "site", strings.ToLower(u.Host))
 	cb := u.Scheme + "://" + u.Host + prefix + "/callback?ticket=" + url.QueryEscape(a.sessions.NewTicket(name, strings.ToLower(u.Host), gen)) +
 		"&next=" + url.QueryEscape(u.RequestURI())
 	http.Redirect(w, r, cb, http.StatusFound)
@@ -250,21 +282,27 @@ func (a *App) loginTarget(next string) string {
 	return prefix + "/sso?next=" + url.QueryEscape(n)
 }
 
-// session returns the signed-in user and the audience of the session cookie.
-func (a *App) session(r *http.Request) (name, aud string, ok bool) {
+// sessionFor returns the session carried by the request's cookie: signature, expiry, idle timeout, user and
+// session generation (a deleted user, or a sign-out since the token was issued, invalidates it) are checked.
+func (a *App) sessionFor(r *http.Request) (Session, bool) {
 	c, err := r.Cookie(cookieName)
 	if err != nil {
-		return "", "", false
+		return Session{}, false
 	}
-	name, aud, gen, err := a.sessions.Verify(c.Value)
+	se, err := a.sessions.VerifySession(c.Value)
 	if err != nil {
-		return "", "", false
+		return Session{}, false
 	}
-	// deleted user, or a sign-out since the token was issued => invalid session
-	if cur, ok := a.store.Gen(name); !ok || cur != gen {
-		return "", "", false
+	if cur, ok := a.store.Gen(se.User); !ok || cur != se.Gen {
+		return Session{}, false
 	}
-	return name, aud, true
+	return se, true
+}
+
+// session returns the signed-in user and the audience of the session cookie.
+func (a *App) session(r *http.Request) (name, aud string, ok bool) {
+	se, ok := a.sessionFor(r)
+	return se.User, se.Aud, ok
 }
 
 // currentUser returns the user of a login-host session (audience "").
@@ -273,10 +311,35 @@ func (a *App) currentUser(r *http.Request) (string, bool) {
 	return name, ok && aud == ""
 }
 
+// refresh re-issues the session cookie with a fresh last-activity time when the idle timeout is on and the
+// last activity is old enough. The absolute expiry never moves. Stateless: the new time lives in the cookie.
+func (a *App) refresh(w http.ResponseWriter, r *http.Request, se Session) {
+	if !a.sessions.NeedsRenewal(se) {
+		return
+	}
+	maxAge := int(se.Exp.Sub(a.sessions.now()).Seconds())
+	if maxAge <= 0 {
+		return
+	}
+	if tok := a.sessions.Renew(se); se.Aud == "" {
+		http.SetCookie(w, a.cookie(r, tok, maxAge))
+	} else {
+		http.SetCookie(w, a.hostCookie(r, tok, maxAge))
+	}
+}
+
+// revoke signs the user out everywhere (see Store.Revoke) and records it.
+func (a *App) revoke(r *http.Request, user, via, site string) {
+	if err := a.store.Revoke(user); err != nil {
+		log.Printf("sign-out: cannot persist revocation: %v", err)
+	}
+	a.auditReq(r, "sign_out", "user", user, "scope", "all sessions", "via", via, "site", site)
+}
+
 func (a *App) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name, ok := a.currentUser(r)
-		if !ok {
+		se, ok := a.sessionFor(r)
+		if !ok || se.Aud != "" {
 			if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
 				http.Redirect(w, r, prefix+"/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 				return
@@ -284,30 +347,39 @@ func (a *App) requireAuth(next http.Handler) http.Handler {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
+		a.refresh(w, r, se)
 		// The user name is passed in a header; any client-supplied value is overwritten.
-		r.Header.Set(a.cfg.UserHeader, name)
+		r.Header.Set(a.cfg.UserHeader, se.User)
 		next.ServeHTTP(w, r)
 	})
 }
+
+// forwardedHeaders are the headers describing the original request, which only a trusted proxy may set.
+var forwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Port", "X-Forwarded-Server", "X-Real-Ip", "Forwarded"}
 
 func (a *App) reverseProxy() http.Handler {
 	rp := httputil.NewSingleHostReverseProxy(a.cfg.Upstream)
 	director := rp.Director
 	rp.Director = func(r *http.Request) {
-		host := r.Host
+		host, trusted, proto := r.Host, a.fromTrusted(r), a.scheme(r)
 		director(r)
 		if a.cfg.PreserveHost {
 			r.Host = host
 		} else {
 			r.Host = a.cfg.Upstream.Host
 		}
-		r.Header.Set("X-Forwarded-Host", host)
-		if r.Header.Get("X-Forwarded-Proto") == "" {
-			if r.TLS != nil {
-				r.Header.Set("X-Forwarded-Proto", "https")
-			} else {
-				r.Header.Set("X-Forwarded-Proto", "http")
+		if !trusted {
+			// A client can send any X-Forwarded-*: drop them and describe the connection we actually saw.
+			// (The reverse proxy then adds the peer address to an empty X-Forwarded-For.)
+			for _, h := range forwardedHeaders {
+				r.Header.Del(h)
 			}
+		}
+		if r.Header.Get("X-Forwarded-Host") == "" {
+			r.Header.Set("X-Forwarded-Host", host)
+		}
+		if r.Header.Get("X-Forwarded-Proto") == "" {
+			r.Header.Set("X-Forwarded-Proto", proto)
 		}
 		// The session cookie must not leak to the upstream.
 		cookies := r.Cookies()
@@ -333,6 +405,7 @@ func (a *App) loginBegin(w http.ResponseWriter, r *http.Request) {
 func (a *App) loginFinish(w http.ResponseWriter, r *http.Request) {
 	sd, ok := a.login.Take(r.URL.Query().Get("cid"))
 	if !ok {
+		a.auditReq(r, "login_failure", "reason", "ceremony expired or unknown")
 		jsonErr(w, 400, "ceremony expired, please start again")
 		return
 	}
@@ -344,11 +417,13 @@ func (a *App) loginFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	user, cred, err := a.wa.FinishPasskeyLogin(handler, sd, r)
 	if err != nil {
+		a.auditReq(r, "login_failure", "reason", "passkey rejected")
 		jsonErr(w, 401, "passkey rejected")
 		return
 	}
 	u := user.(*User)
 	_ = a.store.UpdateCredential(u.ID, cred)
+	a.auditReq(r, "login_success", "user", u.Name, "credential", credTag(cred.ID))
 	gen, _ := a.store.Gen(u.Name)
 	http.SetCookie(w, a.cookie(r, a.sessions.New(u.Name, "", gen), int(a.cfg.SessionTTL.Seconds())))
 	writeJSON(w, 200, map[string]string{"next": a.loginTarget(r.URL.Query().Get("next"))})
@@ -366,17 +441,17 @@ func (a *App) enrollHandler() http.Handler {
 	mux.HandleFunc("GET "+prefix+"/app.js", a.staticPage("app.js"))
 	mux.HandleFunc("GET "+prefix+"/login.js", a.staticPage("login.js"))
 	mux.HandleFunc("GET "+prefix+"/i18n.js", a.staticPage("i18n.js"))
-	mux.HandleFunc("POST "+prefix+"/login/begin", a.loginBegin)
-	mux.HandleFunc("POST "+prefix+"/login/finish", a.loginFinish)
+	mux.Handle("POST "+prefix+"/login/begin", a.limited(a.loginBegin))
+	mux.Handle("POST "+prefix+"/login/finish", a.limited(a.loginFinish))
 	mux.HandleFunc("POST "+prefix+"/logout", a.logout)
 	// Page and API (protected).
 	mux.HandleFunc("GET "+prefix+"/enroll.js", a.staticPage("enroll.js"))
 	mux.Handle("GET /{$}", a.enrollGuard(a.staticPage("enroll.html")))
 	mux.Handle("GET /api/state", a.enrollGuard(http.HandlerFunc(a.apiState)))
 	mux.Handle("GET /api/users", a.enrollGuard(http.HandlerFunc(a.apiUsers)))
-	mux.Handle("POST /api/register/begin", a.enrollGuard(http.HandlerFunc(a.registerBegin)))
-	mux.Handle("POST /api/register/finish", a.enrollGuard(http.HandlerFunc(a.registerFinish)))
-	mux.Handle("DELETE /api/credentials", a.enrollGuard(http.HandlerFunc(a.deleteCredential)))
+	mux.Handle("POST /api/register/begin", a.limited(a.enrollGuard(http.HandlerFunc(a.registerBegin)).ServeHTTP))
+	mux.Handle("POST /api/register/finish", a.limited(a.enrollGuard(http.HandlerFunc(a.registerFinish)).ServeHTTP))
+	mux.Handle("DELETE /api/credentials", a.limited(a.enrollGuard(http.HandlerFunc(a.deleteCredential)).ServeHTTP))
 	return mux
 }
 
@@ -412,6 +487,7 @@ func (a *App) enrollGuard(next http.Handler) http.Handler {
 				return
 			}
 			if bootstrap && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Bootstrap-Token")), []byte(a.bootstrapToken())) != 1 {
+				a.auditReq(r, "enroll_failure", "reason", "invalid bootstrap token")
 				http.Error(w, "invalid bootstrap token (see the container logs)", http.StatusForbidden)
 				return
 			}
@@ -424,9 +500,7 @@ func (a *App) enrollGuard(next http.Handler) http.Handler {
 // (other devices, other protected sites, a copied cookie) is revoked.
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	if name, ok := a.currentUser(r); ok {
-		if err := a.store.Revoke(name); err != nil {
-			log.Printf("sign-out: cannot persist revocation: %v", err)
-		}
+		a.revoke(r, name, "login host", "")
 	}
 	http.SetCookie(w, a.cookie(r, "", -1))
 	http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
@@ -480,6 +554,15 @@ func toolCSP(page []byte) string {
 
 func b64s(b []byte) string { return b64.EncodeToString(b) }
 
+// credTag is a short, non-secret identifier of a credential for logs and the admin tools.
+func credTag(id []byte) string {
+	s := b64s(id)
+	if len(s) > 12 {
+		s = s[:12]
+	}
+	return s
+}
+
 func (a *App) apiUsers(w http.ResponseWriter, r *http.Request) {
 	type cred struct {
 		ID string `json:"id"`
@@ -527,17 +610,20 @@ func (a *App) registerFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	cred, err := a.wa.FinishRegistration(st.User, st.Session, r)
 	if err != nil {
+		a.auditReq(r, "enroll_failure", "user", st.User.Name, "reason", "registration refused")
 		jsonErr(w, 400, "enrollment refused: "+err.Error())
 		return
 	}
 	if err := a.store.AddCredential(st.User, cred); err != nil {
 		if errors.Is(err, ErrDuplicate) {
+			a.auditReq(r, "enroll_failure", "user", st.User.Name, "reason", "duplicate credential")
 			jsonErr(w, 409, err.Error())
 			return
 		}
 		jsonErr(w, 500, "cannot write: "+err.Error())
 		return
 	}
+	a.auditReq(r, "enroll_success", "user", st.User.Name, "credential", credTag(cred.ID), "via", "web")
 	writeJSON(w, 200, map[string]string{"ok": "true"})
 }
 
@@ -552,9 +638,14 @@ func (a *App) deleteCredential(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, 409, "cannot delete the last passkey (this would lock you out)")
 		return
 	}
+	who := ""
+	if u := a.store.ByID(uid); u != nil {
+		who = u.Name
+	}
 	if err := a.store.DeleteCredential(uid, cid); err != nil {
 		jsonErr(w, 500, err.Error())
 		return
 	}
+	a.auditReq(r, "credential_deleted", "user", who, "credential", credTag(cid), "via", "web")
 	writeJSON(w, 200, map[string]string{"ok": "true"})
 }

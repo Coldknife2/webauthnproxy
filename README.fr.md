@@ -40,27 +40,9 @@ Podman : remplacez `docker` par `podman` ; rootless : `podman unshare chown 6553
 
 ## Installation
 
-```yaml
-services:
-  webauthnproxy:
-    image: ghcr.io/coldknife2/webauthnproxy:latest   # en production, épinglez une version : :1.2.3
-    restart: unless-stopped
-    environment:
-      UPSTREAM: http://monsite:80
-      RP_ID: example.com
-      RP_ORIGINS: https://app.example.com
-    volumes: ["./data:/data"]                        # chown 65532 ./data
-```
-
-| Tag | |
-|---|---|
-| `latest`, `main` | dernier commit de `main` |
-| `1.2.3`, `1.2`, `1` | versions |
-
-`linux/amd64`, `linux/arm64`. Vérifier : `docker run --rm ghcr.io/coldknife2/webauthnproxy --version`.
-Depuis les sources : `docker build -t webauthnproxy .`
-
-HTTPS obligatoire hors `localhost`. Traefik devant : [`docker-compose.example.yml`](docker-compose.example.yml).
+Image : `ghcr.io/coldknife2/webauthnproxy` (`linux/amd64`, `linux/arm64`). Tags : `latest`/`main` (dernier commit), `1.2.3`, `1.2`, `1` (versions) : fixez une version en production.
+Compose avec Traefik et HTTPS (obligatoire hors `localhost`) : [`docker-compose.example.yml`](docker-compose.example.yml). Depuis les sources : `docker build -t webauthnproxy .`.
+Le dossier de données doit être inscriptible par l'uid 65532. Vérifier l'image : `docker run --rm ghcr.io/coldknife2/webauthnproxy --version`.
 
 ## Utilisation
 
@@ -143,60 +125,19 @@ Toutes les variables, sécurité, dépannage : [docs/configuration.md](docs/conf
 - Des clients natifs, des API, du WebDAV ou des applis mobiles doivent continuer à fonctionner via les mêmes noms d'hôte.
 - Vous avez besoin de plusieurs utilisateurs avec des groupes, des règles par site ou une administration déléguée.
 - L'environnement est critique ou doit être audité, ou vous avez besoin de haute disponibilité, de révocation par session ou de liaison IP/appareil.
-- Vous n'avez besoin que d'`auth_request` nginx : [Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) est maintenu depuis 2022 (voir ci-dessous).
+- Vous n'avez besoin que d'`auth_request` nginx : [Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) est maintenu depuis 2022.
+- Vos sites partagent un seul domaine et il vous faut seulement le forward-auth Traefik : [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) a la révocation par session ; l'avantage de ce projet est ailleurs ([pourquoi](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth), en anglais).
 
-## Pourquoi
+## Pourquoi celui-ci
 
-**Ce n'est pas la première passerelle à passkeys.** [Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) existe depuis le 2022-01-03 (`auth_request` nginx, dernier commit le 2026-08-18) et
-[passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) (forward-auth, depuis le 2026-04-17) est proche de ce projet. Liste datée, sources et détails : [docs/alternatives.md](docs/alternatives.md) (en anglais).
+Trois choses le distinguent des autres passerelles à passkey. Le reste du tableau (ce que [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) et
+[Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) font mieux, et ma conclusion sur les cas où il ne faut *pas* choisir ce projet) est dans [docs/alternatives.md](docs/alternatives.md) (en anglais).
 
-| | ce dépôt | Quiq/webauthn_proxy | passkey-forwardauth |
-|---|---|---|---|
-| Relaie lui-même le trafic vers un upstream | ✅ | ❌ | ❌ |
-| `forwardAuth` Traefik | ✅ testé de bout en bout | non documenté | ✅ |
-| Un login pour des **domaines sans rapport** | ✅ | ❌ un seul domaine de cookie | ❌ un seul domaine de cookie |
-| Connexion sans nom d'utilisateur | ✅ | ❌ | ✅ |
-| Enrôlement | page protégée par passkey, ou outil statique + import sans redémarrage | page → coller dans `credentials.yml` → redémarrer | admin d'amorçage sur loopback |
-| Sessions | cookie signé, révocation par utilisateur | cookie signé | côté serveur, révocation par session |
-| Limitation de débit | ✅ login et enrôlement, par client et global | ❌ | amorçage seulement |
-| Image / tests | GHCR via la CI / unitaires + e2e | Docker Hub / aucun dans le dépôt | `.deb`/`.rpm` / unitaires |
-| Ancienneté | premier commit le 2026-10-14 | depuis le 2022-01-03 | depuis le 2026-04-17 |
+1. **Un mode proxy intégré** : un conteneur devant un site, sans Traefik, Caddy ni nginx.
+2. **Un seul login pour des domaines sans rapport**, via une liste d'hôtes autorisés (mode forward). Usage étroit : avec un seul domaine et ses sous-domaines, il n'est pas nécessaire.
+3. **Un enrôlement sans redémarrage ni édition de configuration** : une page protégée par vos passkeys existantes, ou un outil statique et un fichier JSON déposé dans un dossier.
 
-**Apporté ici :** un mode proxy intégré, la connexion entre domaines sans rapport avec une liste de sites autorisés, la connexion sans nom d'utilisateur, un enrôlement sans redémarrage, et une suite de bout en bout avec un vrai Traefik.
-**Manquant ici :** sessions côté serveur avec révocation par session, et surtout l'ancienneté.
-
-### Les plateformes d'identité font un autre métier
-
-**Pocket ID, Tinyauth et Authelia sont de bons projets, et ils font un autre métier.** Ce sont des plateformes d'identité et de SSO :
-utilisateurs et groupes, OIDC pour vos applis, règles d'accès par site, interfaces d'administration, matures et très utilisées.
-webauthnproxy est un portail. Il répond à une seule question, *« ce visiteur possède-t-il une passkey enregistrée ? »*, pour un ou plusieurs sites.
-Si vous avez besoin du premier, utilisez-les. Si vous n'avez besoin que du second, inutile de faire tourner deux ou trois services et une base de données.
-
-Ce que dit la documentation officielle (lue le 14/10/2026) :
-
-- **Traefik** n'a [aucun plugin passkey](https://community.traefik.io/t/fido2-passkey-integration-with-traefik/19396).
-- **[Pocket ID](https://github.com/pocket-id/pocket-id)** n'accepte que les passkeys et « ne fournit que OpenID Connect, donc ne peut pas protéger seul une appli sans OIDC » :
-  on met devant un proxy d'authentification, comme Tinyauth, caddy-security ou OAuth2 Proxy ([guide](https://pocket-id.org/docs/guides/proxy-services)).
-- **[Tinyauth](https://github.com/tinyauthapp/tinyauth)** est ce proxy : forward-auth avec [utilisateur/mot de passe (+ TOTP), LDAP et OpenID Connect](https://tinyauth.app/docs/reference/authentication/) ;
-  il n'a pas de passkey en propre et documente [Pocket ID comme moyen d'en avoir](https://tinyauth.app/docs/guides/pocket-id/).
-  Il pose son cookie « pour le domaine parent de l'URL de l'application », ses applis étant des sous-domaines ([configuration du domaine](https://tinyauth.app/docs/getting-started/)) ;
-  son code refuse les applis hors de ce domaine (`domain does not match cookie domain`), ce que j'ai reproduit avec Tinyauth v5.2.0 derrière Traefik le 2026-10-14
-  ([expérience](docs/alternatives.md#experiment-one-login-for-two-unrelated-domains-with-tinyauth) ; Pocket ID ne faisait pas partie de ce test).
-- **[Authelia](https://www.authelia.com/overview/authentication/security-key/)** propose la connexion par passkey sans mot de passe depuis la v4.39, mais « la passkey est un seul facteur » : un mot de passe peut rester demandé
-  pour appliquer une politique `two_factor` (une option expérimentale permet à une passkey avec vérification utilisateur de la satisfaire). Chaque [domaine de cookie](https://www.authelia.com/configuration/session/introduction/) est associé
-  à un `authelia_url` situé dans ce domaine : des domaines sans rapport donnent des portails et des connexions séparés.
-
-| | webauthnproxy | Pocket ID + Tinyauth | Authelia |
-|---|---|---|---|
-| Conteneurs à faire tourner | 1 | 2 (+ Traefik) | 1 (+ stockage) |
-| Un login pour des **domaines sans rapport** | ✅ échange de ticket | ❌ un seul domaine de cookie (testé : Tinyauth v5.2.0) | un portail et une connexion par domaine (d'après sa documentation, non testé) |
-| Proxy intégré (ni Traefik, Caddy, Nginx) | ✅ | ❌ | ❌ |
-| SSO OIDC pour d'autres applis | ❌ | ✅ | ✅ |
-| Règles par site, groupes, plusieurs admins | ❌ | ✅ basique (règles par appli Tinyauth, groupes Pocket ID) | ✅ |
-| Maturité | nouveau, non audité | élevée | élevée |
-
-**Choisissez-les** pour de l'OIDC, des groupes, des règles par site, plusieurs administrateurs, ou un logiciel très utilisé et audité.
-**Choisissez celui-ci** pour un usage perso ou homelab : une passkey, plusieurs sites, rien d'autre à faire tourner.
+Pocket ID, Tinyauth et Authelia sont de bons projets qui font un autre métier (identité, OIDC, groupes). Comparaison avec citations et expérience : [docs/alternatives.md](docs/alternatives.md#identity-platforms-a-different-job).
 
 ## Développement
 

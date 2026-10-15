@@ -5,6 +5,13 @@ The project started on 2026-10-14. Until 1.0, minor versions may change behavior
 
 ## [Unreleased]
 
+### Added
+- **Passkey labels and dates**: `passkeys label <id> <text>`, an optional label field in the enrolment page and in the static tool's JSON; `passkeys list` and the enrolment list show label and date added.
+- **`passkeys add <user> [label]`**: a one-time link (15 minutes, single use, code in the URL fragment) to add a passkey from another device, without the enrolment port.
+- **`/_wap/sessions`**: users see their own sessions and end one or all the others; the login host's page links to it.
+- `SESSION_MAX_PER_USER` (default 50): the least recently used session of a user goes first, so one account cannot fill the session table.
+- The example tests now restart the container: sessions survive, a ticket issued before the restart is refused.
+
 ## [0.1.0] - 2026-10-14
 
 First release. Everything below is new; nothing is claimed beyond what the tests in this repository cover.

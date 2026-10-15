@@ -52,10 +52,11 @@ Deleting a user's last passkey ends their sessions.
 - Anyone who can **write** `sessions.json` (the data volume) can open a session for any user by adding the hash of a value they chose. That is the same trust as writing `users.json` and is outside this model.
 - Restoring an old `sessions.json` brings back sessions that were revoked after the backup. After a restore or an account recovery, delete `sessions.json` (everybody signs in again).
 - A single process owns the table: running two instances against the same data is unsupported.
-- The table is bounded (20,000 sessions; beyond that the ones closest to expiry go).
+- The table is bounded: 20,000 sessions in total and `SESSION_MAX_PER_USER` (50) per user, the least recently used going first, so one account signing in in a loop cannot push out other users' sessions or fill memory.
+- **Users see and end their own sessions** on `/_wap/sessions` (a link on the login host's page): list, end one, end all the others. The API only ever lists the caller's sessions, a session of another user looks like a missing one, and ending needs the anti-CSRF header.
 - Each lookup costs one SHA-256, a read lock and a map access, and updates an atomic timestamp (measured in [performance](performance.md)).
 
-*Tested:* round trip; random, unique, 43-character values; only hashes in `sessions.json`, mode `0600`; modified, appended, guessed, foreign and old-format cookies refused; expiry and idle timeout (including an active session outliving the idle timeout, and the absolute limit still applying);
+*Tested:* per-user cap (least recently used goes, others untouched, flood keeps the cap), sessions page (own sessions only, other users' ids refused, CSRF, site sessions refused, end others), round trip; random, unique, 43-character values; only hashes in `sessions.json`, mode `0600`; modified, appended, guessed, foreign and old-format cookies refused; expiry and idle timeout (including an active session outliving the idle timeout, and the absolute limit still applying);
 restart (sessions kept, revoked ones not, expired ones dropped, corrupt file stops the start); binding on User-Agent and address; revocation scopes (tree, user, id, other users untouched); sign-out of one browser versus all devices; deleted users; table bound.
 
 ## Local administration socket
@@ -104,7 +105,9 @@ Security events are written to **standard output as one JSON object per line** (
 |---|---|---|
 | `login_success`, `login_failure` | passkey login accepted / refused | `user`, `credential` (12-character tag), `reason` |
 | `enroll_success`, `enroll_failure` | passkey added or refused (web page, import folder, bad bootstrap token) | `user`, `credential`, `via`, `reason` |
-| `credential_deleted` | a passkey was removed | `user`, `credential`, `via` |
+| `credential_deleted`, `passkey_labeled` | a passkey was removed / renamed | `user`, `credential`, `via` |
+| `invite_created` | a one-time link to add a passkey was created (never the code) | `user`, `expires` |
+| `session_revoked` | one session ended (admin command or the user's sessions page) | `user`, `session`, `via` |
 | `sign_out` | all sessions of a user revoked | `user`, `via`, `site` |
 | `ticket_issued`, `site_login`, `ticket_rejected` | cross-domain exchange (`reason`: replay, revoked, invalid…) | `user`, `site` |
 | `rate_limited` | a request answered `429` | `scope` (client or global) |

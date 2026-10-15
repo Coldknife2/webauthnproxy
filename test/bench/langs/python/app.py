@@ -1,11 +1,9 @@
-import base64, hashlib, hmac, time
+import hashlib, time
 
-SECRET = b"bench-secret-0123456789abcdef0123456789"
+# Same algorithm as the application: SHA-256 of the cookie value, lookup in a table of sessions (one entry, seeded at
+# start), audience and expiry checks, user lookup.
+TABLE = {hashlib.sha256(b"benchAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").digest(): ("bench", "app.example.com", time.time() + 86400)}
 USERS = {"bench"}
-
-
-def b64(s: str) -> bytes:
-    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
 def check(h: dict):
@@ -17,17 +15,12 @@ def check(h: dict):
         part = part.strip()
         if part.startswith("wap_session="):
             tok = part[len("wap_session="):]
-    if not tok or "." not in tok:
+    if not tok:
         return None
-    payload, _, sig = tok.rpartition(".")
-    want = hmac.new(SECRET, b"s|" + payload.encode(), hashlib.sha256).digest()
-    if not hmac.compare_digest(want, b64(sig)):
+    s = TABLE.get(hashlib.sha256(tok.encode()).digest())
+    if not s or s[1] != host or s[2] < time.time():
         return None
-    f = payload.split(".")
-    if len(f) != 5 or int(f[2]) < time.time() or b64(f[1]).decode() != host:
-        return None
-    user = b64(f[0]).decode()
-    return user if user in USERS else None
+    return s[0] if s[0] in USERS else None
 
 
 async def app(scope, receive, send):

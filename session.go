@@ -1,264 +1,446 @@
 package main
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
-	"hash"
-	"io"
 	"os"
 	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const cookieName = "wap_session"
 
-// Sessions issues stateless HMAC-signed tokens: session cookies and login tickets.
-// A session is bound to an audience: "" for the login host (or a shared cookie domain), or the
-// host of a protected site for the per-host cookies issued through the ticket exchange.
-//
-// keys[0] signs everything new; the other keys only verify, so the signing key can be rotated
-// without signing everybody out (keep the previous key at least SESSION_TTL).
-type Sessions struct {
-	keys  [][]byte
-	pools []*sync.Pool // reusable HMAC hashers, one pool per key
-	ttl   time.Duration
-	idle  time.Duration // 0 = no idle timeout
-	now   func() time.Time
-	boot  string // identifies this process; written into tickets (see NewTicket)
-}
-
-// NewSessions returns a Sessions signing with current and also accepting the previous keys.
-func NewSessions(current []byte, previous [][]byte, ttl, idle time.Duration) *Sessions {
-	s := &Sessions{ttl: ttl, idle: idle, now: time.Now}
-	b := make([]byte, bootLen)
-	_, _ = rand.Read(b)
-	s.boot = b64.EncodeToString(b)
-	for _, k := range append([][]byte{current}, previous...) {
-		s.keys = append(s.keys, k)
-		s.pools = append(s.pools, &sync.Pool{})
-	}
-	return s
-}
-
-// bootLen is the size in bytes of the per-process identifier written into every ticket.
-const bootLen = 9
-
-// ticketTTL is how long a login ticket stays valid; it is also single-use.
-const ticketTTL = 60 * time.Second
-
-// loadSecrets returns the signing key and the previous keys still accepted for verification.
-// The signing key is SESSION_SECRET, or a random key kept in DATA_DIR/session.key. Previous keys come from
-// SESSION_SECRET_PREVIOUS and from DATA_DIR/session.key.previous (rotate with: mv session.key session.key.previous, then restart).
-func loadSecrets(dir string, configured []byte, previousEnv [][]byte) (current []byte, previous [][]byte, err error) {
-	previous = append(previous, previousEnv...)
-	if b, err := os.ReadFile(filepath.Join(dir, "session.key.previous")); err == nil && len(b) >= 32 {
-		previous = append(previous, b)
-	}
-	if len(configured) > 0 {
-		return configured, previous, nil
-	}
-	p := filepath.Join(dir, "session.key")
-	if b, err := os.ReadFile(p); err == nil && len(b) >= 32 {
-		return b, previous, nil
-	}
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return nil, nil, err
-	}
-	return b, previous, os.WriteFile(p, b, 0o600)
-}
-
 var b64 = base64.RawURLEncoding
 
-// mac computes HMAC-SHA256(kind|payload) with key number i, using a pooled hasher, appending the sum to dst.
-// kind separates the token kinds ("s" session, "t" ticket) so one can never be used as the other.
-func (s *Sessions) mac(i int, kind, payload string, dst []byte) []byte {
-	m, _ := s.pools[i].Get().(hash.Hash)
-	if m == nil {
-		m = hmac.New(sha256.New, s.keys[i])
+// Server-side sessions.
+//
+// A cookie holds a random 256-bit token. The server keeps only its SHA-256 and the session's data
+// (user, audience, expiry, last activity, optional User-Agent/IP binding), so a copy of the database does not
+// give access, a session can be listed and revoked on its own, and idle timeout and revocation are exact.
+// Sessions are written to DATA_DIR/sessions.json (mode 0600) and survive a restart; last-activity times are
+// flushed every flushEvery, so a crash can only lose a little precision on them.
+//
+// Login tickets (cross-domain) are random values held in memory and consumed on first presentation: single use
+// is exact within the process, and a ticket never survives a restart.
+
+const (
+	ticketTTL   = 60 * time.Second
+	maxSessions = 20000
+	maxTickets  = 10000
+	flushEvery  = 30 * time.Second
+)
+
+type hash32 = [sha256.Size]byte
+
+func tokenHash(token string) hash32 { return sha256.Sum256([]byte(token)) }
+
+// shortID is the non-secret identifier of a session shown by the admin commands and written to the audit log.
+func shortID(h hash32) string { return b64.EncodeToString(h[:6]) }
+
+func uaDisplay(ua string) string {
+	if len(ua) > 120 {
+		ua = ua[:120]
 	}
-	m.Reset()
-	io.WriteString(m, kind)
-	io.WriteString(m, "|")
-	io.WriteString(m, payload)
-	dst = m.Sum(dst)
-	s.pools[i].Put(m)
-	return dst
+	return ua
 }
 
-func (s *Sessions) sign(kind, payload string) string {
-	var sum [sha256.Size]byte
-	return b64.EncodeToString(s.mac(0, kind, payload, sum[:0]))
+func bindHash(v string) string {
+	if v == "" {
+		return ""
+	}
+	h := sha256.Sum256([]byte(v))
+	return b64.EncodeToString(h[:12])
 }
 
-// token layout: user.aud.exp.gen[.extra…] (user and aud are base64url, so they can never contain the "." separator).
-// gen is the user's session generation: bumping it on the server revokes every token issued before.
-func (s *Sessions) token(kind, user, aud string, exp time.Time, gen int64, extra ...string) string {
-	parts := append([]string{b64.EncodeToString([]byte(user)), b64.EncodeToString([]byte(aud)),
-		strconv.FormatInt(exp.Unix(), 10), strconv.FormatInt(gen, 10)}, extra...)
-	payload := strings.Join(parts, ".")
-	return payload + "." + s.sign(kind, payload)
+type sess struct {
+	user, aud, parent  string // parent: hash (base64) of the login session this site session was opened from
+	created, exp       time.Time
+	seen               atomic.Int64 // last activity, unix seconds
+	ua, uaHash, ipHash string
 }
 
-// parse checks the signature (with the current key, then the previous ones) and the expiry and returns the payload fields.
-func (s *Sessions) parse(kind, v string, fields int) ([]string, time.Time, error) {
-	i := strings.LastIndexByte(v, '.')
-	if i < 0 {
-		return nil, time.Time{}, errors.New("format")
-	}
-	payload, sig := v[:i], v[i+1:]
-	got, err := b64.DecodeString(sig)
-	if err != nil {
-		return nil, time.Time{}, errors.New("signature")
-	}
-	valid := false
-	for k := range s.keys {
-		var sum [sha256.Size]byte
-		if hmac.Equal(got, s.mac(k, kind, payload, sum[:0])) {
-			valid = true
-			break
-		}
-	}
-	if !valid {
-		return nil, time.Time{}, errors.New("signature")
-	}
-	parts := strings.Split(payload, ".")
-	if len(parts) != fields {
-		return nil, time.Time{}, errors.New("format")
-	}
-	exp, err := strconv.ParseInt(parts[2], 10, 64)
-	if err != nil || s.now().Unix() > exp {
-		return nil, time.Time{}, errors.New("expired")
-	}
-	return parts, time.Unix(exp, 0), nil
-}
-
-func decode(seg string) (string, error) {
-	b, err := b64.DecodeString(seg)
-	return string(b), err
-}
-
-// Session is the content of a verified session token.
+// Session is a copy of a stored session.
 type Session struct {
+	ID        string
 	User, Aud string
-	Gen       int64
-	Exp, Seen time.Time // absolute expiry; last activity recorded in the token
+	Created   time.Time
+	Exp, Seen time.Time
+	UA        string
+	hash      hash32
 }
 
-// session token layout: user.aud.exp.gen.seen (seen = last activity, unix seconds).
-const sessionFields = 5
+type ticket struct {
+	user, aud, parent string
+	exp               time.Time
+}
 
-// New returns a session token for user, bound to audience aud and to the user's session generation.
-func (s *Sessions) New(user, aud string, gen int64) string {
+// Binding says which request properties a session is tied to (SESSION_BIND).
+type Binding struct{ UA, IP bool }
+
+type Sessions struct {
+	mu        sync.RWMutex
+	m         map[hash32]*sess
+	tickets   map[hash32]ticket
+	ttl       time.Duration
+	idle      time.Duration // 0 = no idle timeout
+	bind      Binding
+	now       func() time.Time
+	path      string // "" = memory only (tests)
+	dirty     atomic.Bool
+	stopFlush chan struct{}
+}
+
+// NewSessions returns an empty session table. With a data directory the table is loaded from, and saved to,
+// DATA_DIR/sessions.json.
+func NewSessions(dir string, ttl, idle time.Duration, bind Binding) (*Sessions, error) {
+	s := &Sessions{m: map[hash32]*sess{}, tickets: map[hash32]ticket{}, ttl: ttl, idle: idle, bind: bind, now: time.Now}
+	if dir == "" {
+		return s, nil
+	}
+	s.path = filepath.Join(dir, "sessions.json")
+	return s, s.load()
+}
+
+type diskSession struct {
+	H       string `json:"h"`
+	User    string `json:"user"`
+	Aud     string `json:"aud,omitempty"`
+	Parent  string `json:"parent,omitempty"`
+	Created int64  `json:"created"`
+	Exp     int64  `json:"exp"`
+	Seen    int64  `json:"seen"`
+	UA      string `json:"ua,omitempty"`
+	UAHash  string `json:"uah,omitempty"`
+	IPHash  string `json:"iph,omitempty"`
+}
+
+func (s *Sessions) load() error {
+	b, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var rows []diskSession
+	if err := json.Unmarshal(b, &rows); err != nil {
+		return errors.New("sessions.json: " + err.Error())
+	}
 	now := s.now()
-	return s.token("s", user, aud, now.Add(s.ttl), gen, strconv.FormatInt(now.Unix(), 10))
+	for _, r := range rows {
+		raw, err := b64.DecodeString(r.H)
+		if err != nil || len(raw) != sha256.Size {
+			continue
+		}
+		x := &sess{user: r.User, aud: r.Aud, parent: r.Parent, created: time.Unix(r.Created, 0), exp: time.Unix(r.Exp, 0), ua: r.UA, uaHash: r.UAHash, ipHash: r.IPHash}
+		x.seen.Store(r.Seen)
+		if s.dead(x, now) {
+			continue
+		}
+		var h hash32
+		copy(h[:], raw)
+		s.m[h] = x
+	}
+	return nil
 }
 
-// Renew returns the same session with its last-activity time moved to now (the absolute expiry is unchanged).
-func (s *Sessions) Renew(se Session) string {
-	return s.token("s", se.User, se.Aud, se.Exp, se.Gen, strconv.FormatInt(s.now().Unix(), 10))
+// dead reports whether a session is expired or idle.
+func (s *Sessions) dead(x *sess, now time.Time) bool {
+	if !now.Before(x.exp) {
+		return true
+	}
+	return s.idle > 0 && now.Sub(time.Unix(x.seen.Load(), 0)) > s.idle
 }
 
-// VerifySession checks the signature, the absolute expiry and, when configured, the idle timeout.
-func (s *Sessions) VerifySession(v string) (Session, error) {
-	p, exp, err := s.parse("s", v, sessionFields)
+// save writes the table atomically. Callers hold no lock.
+func (s *Sessions) save() error {
+	if s.path == "" {
+		return nil
+	}
+	s.mu.RLock()
+	rows := make([]diskSession, 0, len(s.m))
+	for h, x := range s.m {
+		rows = append(rows, diskSession{H: b64.EncodeToString(h[:]), User: x.user, Aud: x.aud, Parent: x.parent,
+			Created: x.created.Unix(), Exp: x.exp.Unix(), Seen: x.seen.Load(), UA: x.ua, UAHash: x.uaHash, IPHash: x.ipHash})
+	}
+	s.mu.RUnlock()
+	sort.Slice(rows, func(i, j int) bool { return rows[i].H < rows[j].H })
+	b, err := json.Marshal(rows)
 	if err != nil {
-		return Session{}, err
+		return err
 	}
-	se := Session{Exp: exp}
-	if se.User, err = decode(p[0]); err != nil {
-		return Session{}, err
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
 	}
-	if se.Aud, err = decode(p[1]); err != nil {
-		return Session{}, err
-	}
-	if se.Gen, err = strconv.ParseInt(p[3], 10, 64); err != nil {
-		return Session{}, err
-	}
-	seen, err := strconv.ParseInt(p[4], 10, 64)
-	if err != nil {
-		return Session{}, err
-	}
-	se.Seen = time.Unix(seen, 0)
-	if s.idle > 0 && s.now().Sub(se.Seen) > s.idle {
-		return Session{}, errors.New("idle")
-	}
-	return se, nil
+	s.dirty.Store(false)
+	return os.Rename(tmp, s.path)
 }
 
-// NeedsRenewal reports whether the session should be re-issued with a fresh last-activity time:
-// only when an idle timeout is set and a quarter of it has passed, so that most requests set no cookie.
-func (s *Sessions) NeedsRenewal(se Session) bool {
-	return s.idle > 0 && s.now().Sub(se.Seen) > s.idle/4
+// Run flushes last-activity times periodically and prunes dead sessions until Stop is called.
+func (s *Sessions) Run() {
+	s.stopFlush = make(chan struct{})
+	go func() {
+		t := time.NewTicker(flushEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				s.prune()
+				if s.dirty.Load() {
+					_ = s.save()
+				}
+			case <-s.stopFlush:
+				return
+			}
+		}
+	}()
 }
 
-// Verify returns the user name, audience and generation if the session token is valid.
-func (s *Sessions) Verify(v string) (user, aud string, gen int64, err error) {
-	se, err := s.VerifySession(v)
-	return se.User, se.Aud, se.Gen, err
+// Stop ends Run and writes the table one last time.
+func (s *Sessions) Stop() {
+	if s.stopFlush != nil {
+		close(s.stopFlush)
+	}
+	_ = s.save()
 }
 
-// NewTicket returns a short-lived, single-use ticket granting a session on host aud.
-func (s *Sessions) NewTicket(user, aud string, gen int64) string {
-	n := make([]byte, 16)
-	_, _ = rand.Read(n)
-	// The ticket carries the identifier of the process that issued it (s.boot, 12 characters). Single use is
-	// enforced by an in-memory set of nonces, which a restart empties: a ticket from an earlier run, or from another
-	// instance, is therefore refused rather than redeemable a second time.
-	return s.token("t", user, aud, s.now().Add(ticketTTL), gen, s.boot+b64.EncodeToString(n))
-}
-
-// VerifyTicket returns the ticket's user, audience, generation, nonce and expiry if it is valid.
-func (s *Sessions) VerifyTicket(v string) (user, aud string, gen int64, nonce string, exp time.Time, err error) {
-	p, exp, err := s.parse("t", v, 5)
-	if err != nil {
-		return "", "", 0, "", time.Time{}, err
-	}
-	if user, err = decode(p[0]); err != nil {
-		return "", "", 0, "", time.Time{}, err
-	}
-	if aud, err = decode(p[1]); err != nil {
-		return "", "", 0, "", time.Time{}, err
-	}
-	if gen, err = strconv.ParseInt(p[3], 10, 64); err != nil {
-		return "", "", 0, "", time.Time{}, err
-	}
-	if !strings.HasPrefix(p[4], s.boot) || len(p[4]) <= len(s.boot) {
-		return "", "", 0, "", time.Time{}, errors.New("ticket from another run")
-	}
-	return user, aud, gen, p[4], exp, nil
-}
-
-// Seen remembers single-use values (ticket nonces) until they expire.
-type Seen struct {
-	mu sync.Mutex
-	m  map[string]time.Time
-}
-
-// Mark records nonce and reports whether it was new (false = replay).
-func (s *Seen) Mark(nonce string, exp time.Time) bool {
+func (s *Sessions) prune() {
+	now := s.now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.m == nil {
-		s.m = map[string]time.Time{}
-	}
-	now := time.Now()
-	for k, e := range s.m {
-		if now.After(e) {
-			delete(s.m, k)
+	for h, x := range s.m {
+		if s.dead(x, now) {
+			delete(s.m, h)
+			s.dirty.Store(true)
 		}
 	}
-	if _, dup := s.m[nonce]; dup {
+	for h, t := range s.tickets {
+		if !now.Before(t.exp) {
+			delete(s.tickets, h)
+		}
+	}
+	s.mu.Unlock()
+}
+
+func (s *Sessions) newToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return b64.EncodeToString(b)
+}
+
+// Create opens a session for user on audience aud ("" = the login host or a shared cookie domain) and returns the
+// cookie value. parent is the session this one was opened from (cross-domain), or "".
+func (s *Sessions) Create(user, aud, parent, ua, ip string) (token string) {
+	token = s.newToken()
+	now := s.now()
+	x := &sess{user: user, aud: aud, parent: parent, created: now, exp: now.Add(s.ttl), ua: uaDisplay(ua)}
+	x.seen.Store(now.Unix())
+	if s.bind.UA {
+		x.uaHash = bindHash(ua)
+	}
+	if s.bind.IP {
+		x.ipHash = bindHash(ip)
+	}
+	s.mu.Lock()
+	if len(s.m) >= maxSessions { // memory bound: drop the sessions closest to expiry
+		var oldest hash32
+		var oe time.Time
+		first := true
+		for h, v := range s.m {
+			if first || v.exp.Before(oe) {
+				oldest, oe, first = h, v.exp, false
+			}
+		}
+		delete(s.m, oldest)
+	}
+	s.m[tokenHash(token)] = x
+	s.mu.Unlock()
+	_ = s.save()
+	return token
+}
+
+// Lookup returns the session of a cookie value if it exists, has not expired or been idle too long, and matches the
+// request's binding. It records the activity. Every failure looks the same to the caller.
+func (s *Sessions) Lookup(token, ua, ip string) (Session, bool) {
+	if token == "" {
+		return Session{}, false
+	}
+	h := tokenHash(token)
+	now := s.now()
+	s.mu.RLock()
+	x := s.m[h]
+	s.mu.RUnlock()
+	if x == nil || s.dead(x, now) {
+		return Session{}, false
+	}
+	if x.uaHash != "" && subtle.ConstantTimeCompare([]byte(x.uaHash), []byte(bindHash(ua))) != 1 {
+		return Session{}, false
+	}
+	if x.ipHash != "" && subtle.ConstantTimeCompare([]byte(x.ipHash), []byte(bindHash(ip))) != 1 {
+		return Session{}, false
+	}
+	if now.Unix() != x.seen.Load() {
+		x.seen.Store(now.Unix())
+		s.dirty.Store(true)
+	}
+	return Session{ID: shortID(h), User: x.user, Aud: x.aud, Created: x.created, Exp: x.exp, Seen: now, UA: x.ua, hash: h}, true
+}
+
+// Handle is the value to pass as parent when opening sessions from this one.
+func (se Session) Handle() string { return b64.EncodeToString(se.hash[:]) }
+
+// Alive reports whether the session with this handle still exists.
+func (s *Sessions) Alive(handle string) bool {
+	raw, err := b64.DecodeString(handle)
+	if err != nil || len(raw) != sha256.Size {
 		return false
 	}
-	s.m[nonce] = exp
-	return true
+	var h hash32
+	copy(h[:], raw)
+	s.mu.RLock()
+	x := s.m[h]
+	s.mu.RUnlock()
+	return x != nil && !s.dead(x, s.now())
+}
+
+// List returns the live sessions, newest first.
+func (s *Sessions) List() []Session {
+	now := s.now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []Session{}
+	for h, x := range s.m {
+		if s.dead(x, now) {
+			continue
+		}
+		out = append(out, Session{ID: shortID(h), User: x.user, Aud: x.aud, Created: x.created, Exp: x.exp, Seen: time.Unix(x.seen.Load(), 0), UA: x.ua, hash: h})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Created.After(out[j].Created) })
+	return out
+}
+
+// removeLocked deletes every session satisfying match and reports how many went.
+func (s *Sessions) removeWhere(match func(h hash32, x *sess) bool) int {
+	n := 0
+	s.mu.Lock()
+	for h, x := range s.m {
+		if match(h, x) {
+			delete(s.m, h)
+			n++
+		}
+	}
+	s.mu.Unlock()
+	if n > 0 {
+		_ = s.save()
+	}
+	return n
+}
+
+// RevokeTree ends a session together with the site sessions that were opened from it, or, given a site
+// session, the login session it came from and that session's other sites: "sign out of this browser".
+func (s *Sessions) RevokeTree(se Session) int {
+	root := se.Handle()
+	s.mu.RLock()
+	if x := s.m[se.hash]; x != nil && x.parent != "" {
+		root = x.parent
+	}
+	s.mu.RUnlock()
+	return s.removeWhere(func(h hash32, x *sess) bool {
+		return b64.EncodeToString(h[:]) == root || x.parent == root || h == se.hash
+	})
+}
+
+// Replace ends a login session that has just been superseded by a new sign-in in the same browser (newToken is the
+// cookie value of the new session) and hands the site sessions opened from it over to the new one, so they stay
+// reachable by "sign out of this browser".
+func (s *Sessions) Replace(old Session, newToken string) {
+	nh := b64.EncodeToString(func() []byte { h := tokenHash(newToken); return h[:] }())
+	oh := old.Handle()
+	s.mu.Lock()
+	delete(s.m, old.hash)
+	for _, x := range s.m {
+		if x.parent == oh {
+			x.parent = nh
+		}
+	}
+	s.mu.Unlock()
+	_ = s.save()
+}
+
+// RevokeUser ends every session of a user ("sign out everywhere").
+func (s *Sessions) RevokeUser(user string) int {
+	return s.removeWhere(func(_ hash32, x *sess) bool { return x.user == user })
+}
+
+// RevokeID ends the session whose short identifier starts with id. It returns the sessions removed, or an error
+// when the id matches nothing or several sessions.
+func (s *Sessions) RevokeID(id string) (Session, error) {
+	var found []Session
+	for _, se := range s.List() {
+		if strings.HasPrefix(se.ID, id) {
+			found = append(found, se)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return Session{}, errors.New("no session with that id")
+	case 1:
+		s.removeWhere(func(h hash32, _ *sess) bool { return h == found[0].hash })
+		return found[0], nil
+	}
+	return Session{}, errors.New("several sessions match, give more characters")
+}
+
+// ---- tickets
+
+// NewTicket returns a single-use ticket granting a session on host aud, valid for ticketTTL.
+func (s *Sessions) NewTicket(user, aud, parent string) string {
+	tok := s.newToken()
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.tickets) >= maxTickets {
+		for h, t := range s.tickets {
+			if !now.Before(t.exp) {
+				delete(s.tickets, h)
+			}
+		}
+		for h := range s.tickets { // still full: tickets live 60 s, drop an arbitrary one rather than grow
+			if len(s.tickets) < maxTickets {
+				break
+			}
+			delete(s.tickets, h)
+		}
+	}
+	s.tickets[tokenHash(tok)] = ticket{user, aud, parent, now.Add(ticketTTL)}
+	return tok
+}
+
+// ConsumeTicket removes the ticket on first presentation, whatever the outcome, and returns it when it was
+// valid and issued for aud. A second presentation, a presentation on another site and an expired ticket all fail.
+func (s *Sessions) ConsumeTicket(tok, aud string) (user, parent string, reason string) {
+	h := tokenHash(tok)
+	s.mu.Lock()
+	t, ok := s.tickets[h]
+	delete(s.tickets, h)
+	s.mu.Unlock()
+	switch {
+	case !ok:
+		return "", "", "unknown, expired or already used"
+	case !s.now().Before(t.exp):
+		return "", "", "expired"
+	case t.aud != aud:
+		return "", "", "issued for another site"
+	}
+	return t.user, t.parent, ""
 }
 
 // Ceremonies keeps WebAuthn ceremony data in memory (single use, short TTL).

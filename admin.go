@@ -23,9 +23,21 @@ import (
 //
 //	docker exec webauthnproxy /webauthnproxy passkeys list
 //	docker exec webauthnproxy /webauthnproxy passkeys revoke <id>
+//	docker exec webauthnproxy /webauthnproxy sessions list
+//	docker exec webauthnproxy /webauthnproxy sessions revoke <id>
 //	docker exec webauthnproxy /webauthnproxy signout <user>
 
 const adminSocket = "admin.sock"
+
+type sessionInfo struct {
+	ID       string `json:"id"` // short non-secret tag of the session
+	User     string `json:"user"`
+	Site     string `json:"site,omitempty"` // "" = the login host
+	Created  int64  `json:"created"`
+	LastSeen int64  `json:"lastSeen"`
+	Expires  int64  `json:"expires"`
+	UA       string `json:"userAgent,omitempty"`
+}
 
 type passkeyInfo struct {
 	User       string   `json:"user"`
@@ -78,27 +90,42 @@ func (a *App) adminHandler() http.Handler {
 				jsonErr(w, 500, err.Error())
 				return
 			}
-			// the passkey is gone; sessions it opened are not tied to it, so end them too
-			if err := a.store.Revoke(user.Name); err != nil {
-				jsonErr(w, 500, err.Error())
-				return
-			}
+			// sessions are not tied to one passkey: end all of the user's, so a lost authenticator's sessions go too
+			a.sessions.RevokeUser(user.Name)
 			a.audit.Event("credential_deleted", "user", user.Name, "credential", credTag(cred), "via", "cli")
 			writeJSON(w, 200, map[string]string{"ok": "true", "user": user.Name})
 		}
 	})
 	mux.HandleFunc("POST /users/{name}/signout", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
-		if _, ok := a.store.Gen(name); !ok {
+		if !a.store.Has(name) {
 			jsonErr(w, 404, "no such user")
 			return
 		}
-		if err := a.store.Revoke(name); err != nil {
-			jsonErr(w, 500, err.Error())
+		n := a.sessions.RevokeUser(name)
+		a.audit.Event("sign_out", "user", name, "scope", "all sessions", "sessions", n, "via", "cli")
+		writeJSON(w, 200, map[string]any{"ok": true, "sessions": n})
+	})
+	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, r *http.Request) {
+		out := []sessionInfo{}
+		for _, se := range a.sessions.List() {
+			out = append(out, sessionInfo{ID: se.ID, User: se.User, Site: se.Aud, Created: se.Created.Unix(), LastSeen: se.Seen.Unix(), Expires: se.Exp.Unix(), UA: se.UA})
+		}
+		writeJSON(w, 200, out)
+	})
+	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if len(id) < 4 {
+			jsonErr(w, 400, "give at least 4 characters of the id shown by 'sessions list'")
 			return
 		}
-		a.audit.Event("sign_out", "user", name, "via", "cli")
-		writeJSON(w, 200, map[string]string{"ok": "true"})
+		se, err := a.sessions.RevokeID(id)
+		if err != nil {
+			jsonErr(w, 404, err.Error())
+			return
+		}
+		a.audit.Event("session_revoked", "user", se.User, "session", se.ID, "site", se.Aud, "via", "cli")
+		writeJSON(w, 200, map[string]string{"ok": "true", "user": se.User})
 	})
 	return mux
 }
@@ -189,6 +216,39 @@ func runCLI(args []string, dir string, out io.Writer) (handled bool, err error) 
 			fmt.Fprintf(out, "passkey revoked; sessions of %s ended\n", r.User)
 			return true, nil
 		}
+	case "sessions":
+		if len(args) == 2 && args[1] == "list" {
+			b, err := adminCall(dir, "GET", "/sessions")
+			if err != nil {
+				return true, err
+			}
+			var ss []sessionInfo
+			if err := json.Unmarshal(b, &ss); err != nil {
+				return true, err
+			}
+			if len(ss) == 0 {
+				fmt.Fprintln(out, "no active session")
+			}
+			for _, s := range ss {
+				site := s.Site
+				if site == "" {
+					site = "(login host)"
+				}
+				fmt.Fprintf(out, "%-8s  user=%s  site=%s  since=%s  last=%s  %s\n", s.ID[:8], s.User, site,
+					time.Unix(s.Created, 0).UTC().Format("2006-01-02 15:04"), time.Unix(s.LastSeen, 0).UTC().Format("15:04:05"), s.UA)
+			}
+			return true, nil
+		}
+		if len(args) == 3 && args[1] == "revoke" {
+			b, err := adminCall(dir, "DELETE", "/sessions/"+url.PathEscape(args[2]))
+			if err != nil {
+				return true, err
+			}
+			var r struct{ User string }
+			_ = json.Unmarshal(b, &r)
+			fmt.Fprintf(out, "session of %s revoked\n", r.User)
+			return true, nil
+		}
 	case "signout":
 		if len(args) == 2 {
 			if _, err := adminCall(dir, "POST", "/users/"+url.PathEscape(args[1])+"/signout"); err != nil {
@@ -202,7 +262,7 @@ func runCLI(args []string, dir string, out io.Writer) (handled bool, err error) 
 	default:
 		return false, nil
 	}
-	return true, errors.New("usage: webauthnproxy passkeys list | passkeys revoke <id> | signout <user> | healthcheck")
+	return true, errors.New("usage: webauthnproxy passkeys list | passkeys revoke <id> | sessions list | sessions revoke <id> | signout <user> | healthcheck")
 }
 
 // healthcheck asks the local service whether it is up; it is what the container HEALTHCHECK runs

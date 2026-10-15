@@ -1,11 +1,18 @@
-using System.Buffers.Text;
 using System.Security.Cryptography;
 using System.Text;
 
 var builder = WebApplication.CreateSlimBuilder(args);
 builder.Logging.ClearProviders();
 var app = builder.Build();
-byte[] secret = Encoding.UTF8.GetBytes("bench-secret-0123456789abcdef0123456789");
+
+// Same algorithm as the application: SHA-256 of the cookie value, lookup in a table of sessions (one entry, seeded at
+// start), audience and expiry checks, user lookup.
+const string token = "benchAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+var table = new Dictionary<string, (string User, string Aud, long Exp)>
+{
+    [Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)))] = ("bench", "app.example.com", DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 86400),
+};
+var users = new HashSet<string> { "bench" };
 
 app.MapGet("/_wap/verify", (HttpContext c) =>
 {
@@ -15,19 +22,9 @@ app.MapGet("/_wap/verify", (HttpContext c) =>
     foreach (var part in c.Request.Headers.Cookie.ToString().Split(';'))
         if (part.Trim().StartsWith("wap_session=")) tok = part.Trim()["wap_session=".Length..];
     if (tok is null) return Results.StatusCode(401);
-    int i = tok.LastIndexOf('.');
-    if (i < 0) return Results.StatusCode(401);
-    string payload = tok[..i];
-    byte[] want = HMACSHA256.HashData(secret, Encoding.UTF8.GetBytes("s|" + payload));
-    byte[] got;
-    try { got = Base64Url.DecodeFromChars(tok.AsSpan(i + 1)); } catch { return Results.StatusCode(401); }
-    if (!CryptographicOperations.FixedTimeEquals(want, got)) return Results.StatusCode(401);
-    var f = payload.Split('.');
-    if (f.Length != 5 || long.Parse(f[2]) < DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return Results.StatusCode(401);
-    if (Encoding.UTF8.GetString(Base64Url.DecodeFromChars(f[1])) != host) return Results.StatusCode(401);
-    string user = Encoding.UTF8.GetString(Base64Url.DecodeFromChars(f[0]));
-    if (user != "bench") return Results.StatusCode(401); // user lookup (in-memory set of one)
-    c.Response.Headers["X-Authenticated-User"] = user;
+    if (!table.TryGetValue(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(tok))), out var s)) return Results.StatusCode(401);
+    if (s.Aud != host || s.Exp < DateTimeOffset.UtcNow.ToUnixTimeSeconds() || !users.Contains(s.User)) return Results.StatusCode(401);
+    c.Response.Headers["X-Authenticated-User"] = s.User;
     return Results.StatusCode(200);
 });
 app.Run("http://0.0.0.0:8080");

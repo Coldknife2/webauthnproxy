@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +34,7 @@ func proxyTo(t *testing.T, trusted string) (*App, *http.Header) {
 func proxied(a *App, peer string, hdr map[string]string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("GET", "http://app.example.com/page", nil)
 	r.RemoteAddr = peer
-	r.Header.Set("Cookie", cookieName+"="+a.sessions.New("remi", "", 0))
+	r.Header.Set("Cookie", cookieName+"="+mk(a, "remi", ""))
 	for k, v := range hdr {
 		r.Header.Set(k, v)
 	}
@@ -78,153 +76,86 @@ func TestProxyModeKeepsATrustedProxysHeaders(t *testing.T) {
 
 func TestSessionCookieNeverReachesTheUpstream(t *testing.T) {
 	a, got := proxyTo(t, "")
-	w := proxied(a, "203.0.113.7:1", map[string]string{"Cookie": cookieName + "=" + a.sessions.New("remi", "", 0) + "; theme=dark"})
+	w := proxied(a, "203.0.113.7:1", map[string]string{"Cookie": cookieName + "=" + mk(a, "remi", "") + "; theme=dark"})
 	if w.Code != 200 || strings.Contains(got.Get("Cookie"), cookieName) || got.Get("Cookie") != "theme=dark" {
 		t.Errorf("upstream cookie header: %q", got.Get("Cookie"))
 	}
 }
 
-// ---- session key rotation
-
-func TestKeyRotationKeepsSessionsAlive(t *testing.T) {
-	oldKey := []byte("old-key-0123456789abcdef0123456789")
-	newKey := []byte("new-key-0123456789abcdef0123456789")
-	before := NewSessions(oldKey, nil, time.Hour, 0)
-	cookie := before.New("remi", "anysite.com", 3)
-	ticket := before.NewTicket("remi", "anysite.com", 3)
-
-	during := NewSessions(newKey, [][]byte{oldKey}, time.Hour, 0) // rotation window: new key signs, old key still verifies
-	if u, aud, gen, err := during.Verify(cookie); err != nil || u != "remi" || aud != "anysite.com" || gen != 3 {
-		t.Fatalf("a session signed with the previous key was refused during rotation: %v", err)
-	}
-	// rotation means a restart, and tickets do not survive a restart (single use is kept in memory); sessions do
-	if _, _, _, _, _, err := during.VerifyTicket(ticket); err == nil {
-		t.Fatal("a ticket from before the restart was accepted")
-	}
-	fresh := during.New("remi", "anysite.com", 3)
-
-	after := NewSessions(newKey, nil, time.Hour, 0) // previous key removed
-	if _, _, _, err := after.Verify(fresh); err != nil {
-		t.Fatalf("tokens issued during rotation must be signed with the new key: %v", err)
-	}
-	if _, _, _, err := after.Verify(cookie); err == nil {
-		t.Fatal("a token signed with a removed key is still accepted")
-	}
-	if _, _, _, err := NewSessions(oldKey, nil, time.Hour, 0).Verify(fresh); err == nil {
-		t.Fatal("the old key accepted a token signed with the new one")
-	}
-}
-
-func TestRotationDoesNotWeakenForgeryChecks(t *testing.T) {
-	cur, prev := []byte("cur-key-0123456789abcdef0123456789"), []byte("prev-key-0123456789abcdef012345678")
-	s := NewSessions(cur, [][]byte{prev}, time.Hour, 0)
-	stranger := NewSessions([]byte("stranger-key-0123456789abcdef01234"), nil, time.Hour, 0)
-	if _, _, _, err := s.Verify(stranger.New("remi", "", 0)); err == nil {
-		t.Error("token signed with an unknown key accepted")
-	}
-	// altering a field of a validly signed token breaks the signature under every accepted key
-	p := strings.Split(NewSessions(prev, nil, time.Hour, 0).New("remi", "", 0), ".")
-	p[0] = b64.EncodeToString([]byte("admin"))
-	if _, _, _, err := s.Verify(strings.Join(p, ".")); err == nil {
-		t.Error("tampered token accepted")
-	}
-}
-
-func TestLoadSecretsReadsThePreviousKeyFile(t *testing.T) {
-	dir := t.TempDir()
-	cur1, prev, err := loadSecrets(dir, nil, nil)
-	if err != nil || len(prev) != 0 || len(cur1) != 32 {
-		t.Fatalf("first start: %v %d %d", err, len(cur1), len(prev))
-	}
-	// documented rotation: move the key aside and restart
-	if err := os.Rename(filepath.Join(dir, "session.key"), filepath.Join(dir, "session.key.previous")); err != nil {
-		t.Fatal(err)
-	}
-	cur2, prev, err := loadSecrets(dir, nil, [][]byte{[]byte("env-previous-0123456789abcdef012345")})
-	if err != nil || bytes.Equal(cur2, cur1) || len(prev) != 2 || !bytes.Equal(prev[1], cur1) {
-		t.Fatalf("after rotation: current changed=%v previous=%d err=%v", !bytes.Equal(cur2, cur1), len(prev), err)
-	}
-}
-
-func TestPreviousSecretMustBeLongEnough(t *testing.T) {
-	t.Setenv("UPSTREAM", "http://localhost:3000")
-	t.Setenv("RP_ID", "localhost")
-	t.Setenv("RP_ORIGINS", "http://localhost:8080")
-	t.Setenv("SESSION_SECRET_PREVIOUS", "short")
-	if _, err := LoadConfig(); err == nil {
-		t.Fatal("a short previous key was accepted")
-	}
-}
-
-// ---- idle timeout (stateless)
+// ---- idle timeout (exact, server side)
 
 type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { return c.t }
 
-func idleSessions(idle time.Duration) (*Sessions, *clock) {
+func idleSessions(t *testing.T, idle time.Duration) (*Sessions, *clock) {
+	t.Helper()
 	c := &clock{time.Unix(2_000_000_000, 0)}
-	s := NewSessions([]byte("idle-key-0123456789abcdef0123456789"), nil, 12*time.Hour, idle)
+	s := mustSessions(t, "", 12*time.Hour, idle, Binding{})
 	s.now = c.now
 	return s, c
 }
 
-func TestIdleTimeoutAndRenewal(t *testing.T) {
-	s, c := idleSessions(time.Hour)
-	tok := s.New("remi", "", 0)
-	se, err := s.VerifySession(tok)
-	if err != nil || s.NeedsRenewal(se) {
-		t.Fatalf("fresh session: %v needsRenewal=%v", err, s.NeedsRenewal(se))
+func TestIdleTimeoutIsExactAndActivityKeepsTheSessionAlive(t *testing.T) {
+	s, c := idleSessions(t, time.Hour)
+	tok := s.Create("remi", "", "", "", "")
+	for i := 0; i < 5; i++ { // five visits 50 minutes apart: far beyond the idle timeout in total, never idle in between
+		c.t = c.t.Add(50 * time.Minute)
+		if _, ok := s.Lookup(tok, "", ""); !ok {
+			t.Fatalf("visit %d: an active session was refused", i)
+		}
 	}
-	c.t = c.t.Add(20 * time.Minute) // more than a quarter of the idle timeout
-	se, err = s.VerifySession(tok)
-	if err != nil || !s.NeedsRenewal(se) {
-		t.Fatalf("after 20 min: %v needsRenewal=%v", err, s.NeedsRenewal(se))
+	c.t = c.t.Add(61 * time.Minute)
+	if _, ok := s.Lookup(tok, "", ""); ok {
+		t.Fatal("a session idle for longer than the timeout was accepted")
 	}
-	renewed := s.Renew(se)
-	c.t = c.t.Add(50 * time.Minute) // 70 min after login: the original went idle, the renewed one (50 min old) did not
-	if _, err := s.VerifySession(tok); err == nil || err.Error() != "idle" {
-		t.Fatalf("the original session should be idle: %v", err)
+	// the absolute limit still applies to a busy session
+	tok = s.Create("remi", "", "", "", "")
+	for i := 0; i < 30; i++ {
+		c.t = c.t.Add(30 * time.Minute)
+		s.Lookup(tok, "", "")
 	}
-	re, err := s.VerifySession(renewed)
-	if err != nil {
-		t.Fatalf("the renewed session was refused: %v", err)
-	}
-	if !re.Exp.Equal(se.Exp) {
-		t.Errorf("renewal moved the absolute expiry: %v -> %v", se.Exp, re.Exp)
-	}
-	c.t = se.Exp.Add(time.Second) // the absolute limit still applies
-	if _, err := s.VerifySession(s.Renew(re)); err == nil {
-		t.Error("a session was valid beyond its absolute expiry")
+	if _, ok := s.Lookup(tok, "", ""); ok {
+		t.Fatal("a session was valid beyond SESSION_TTL")
 	}
 }
 
 func TestIdleTimeoutOffByDefault(t *testing.T) {
-	s, c := idleSessions(0)
-	tok := s.New("remi", "", 0)
+	s, c := idleSessions(t, 0)
+	tok := s.Create("remi", "", "", "", "")
 	c.t = c.t.Add(11 * time.Hour)
-	se, err := s.VerifySession(tok)
-	if err != nil || s.NeedsRenewal(se) {
-		t.Fatalf("without an idle timeout nothing expires early and nothing is renewed: %v", err)
+	if _, ok := s.Lookup(tok, "", ""); !ok {
+		t.Fatal("without an idle timeout nothing expires early")
 	}
 }
 
-func TestLastActivityCannotBeForged(t *testing.T) {
-	s, c := idleSessions(time.Hour)
-	tok := s.New("remi", "", 0)
-	c.t = c.t.Add(3 * time.Hour)
-	p := strings.Split(tok, ".")
-	p[4] = "2000000000" // rewrite "last seen" to pretend recent activity
-	if _, err := s.VerifySession(strings.Join(p, ".")); err == nil {
-		t.Fatal("a rewritten last-activity time was accepted")
-	}
-}
-
-func TestProxyModeRefreshesTheCookieOnlyWhenNeeded(t *testing.T) {
-	a, _ := proxyTo(t, "")
-	s, c := idleSessions(time.Hour)
+func TestIdleSessionNeedsNoCookieRenewal(t *testing.T) {
+	// the browser's cookie never changes: activity is recorded on the server, so Traefik needs no extra option
+	a := forwardApp(t)
+	addUser(t, a)
+	s, c := idleSessions(t, time.Hour)
 	a.sessions = s
-	tok := s.New("remi", "", 0)
+	tok := s.Create("remi", "anysite.com", "", "", "")
+	c.t = c.t.Add(40 * time.Minute)
+	w := verifyReq(a, "anysite.com", "/page", tok)
+	if w.Code != 200 || w.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("verify must not touch the cookie: %d %q", w.Code, w.Header().Get("Set-Cookie"))
+	}
+	c.t = c.t.Add(40 * time.Minute) // 80 minutes after login, 40 after the last visit
+	if w := verifyReq(a, "anysite.com", "/page", tok); w.Code != 200 {
+		t.Fatalf("the visit 40 minutes ago must have kept the session alive: %d", w.Code)
+	}
+	c.t = c.t.Add(2 * time.Hour)
+	if w := verifyReq(a, "anysite.com", "/page", tok); w.Code != 302 {
+		t.Fatalf("an idle session must send the browser to the login: %d", w.Code)
+	}
+}
+
+func TestProxyModeIdleSession(t *testing.T) {
+	a, _ := proxyTo(t, "")
+	s, c := idleSessions(t, time.Hour)
+	a.sessions = s
+	tok := s.Create("remi", "", "", "", "")
 	call := func() *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", "http://app.example.com/page", nil)
 		r.Header.Set("Cookie", cookieName+"="+tok)
@@ -233,29 +164,11 @@ func TestProxyModeRefreshesTheCookieOnlyWhenNeeded(t *testing.T) {
 		return w
 	}
 	if w := call(); w.Code != 200 || w.Header().Get("Set-Cookie") != "" {
-		t.Fatalf("a recent session must not get a new cookie: %d %q", w.Code, w.Header().Get("Set-Cookie"))
-	}
-	c.t = c.t.Add(30 * time.Minute)
-	w := call()
-	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Set-Cookie"), cookieName+"=") {
-		t.Fatalf("an aging session must be renewed: %d %q", w.Code, w.Header().Get("Set-Cookie"))
+		t.Fatalf("recent session: %d %q", w.Code, w.Header().Get("Set-Cookie"))
 	}
 	c.t = c.t.Add(2 * time.Hour)
 	if w := call(); w.Code != 401 {
-		t.Fatalf("an idle session must be refused (the browser gets the login redirect, an API 401): %d", w.Code)
-	}
-}
-
-func TestForwardModeRenewsTheSiteCookieOn200(t *testing.T) {
-	a := forwardApp(t)
-	addUser(t, a)
-	s, c := idleSessions(time.Hour)
-	a.sessions = s
-	tok := s.New("remi", "anysite.com", 0)
-	c.t = c.t.Add(30 * time.Minute)
-	w := verifyReq(a, "anysite.com", "/page", tok)
-	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Set-Cookie"), cookieName+"=") || strings.Contains(w.Header().Get("Set-Cookie"), "Domain=") {
-		t.Fatalf("verify must hand back a host-only renewed cookie: %d %q", w.Code, w.Header().Get("Set-Cookie"))
+		t.Fatalf("an idle session must be refused: %d", w.Code)
 	}
 }
 
@@ -308,7 +221,7 @@ func TestAuditLogRecordsSecurityEventsWithoutSecrets(t *testing.T) {
 	a.ipLimit = NewLimiter(RateSpec{1, time.Minute})
 	addUser(t, a)
 
-	login := a.sessions.New("remi", "", 0)
+	login := mk(a, "remi", "")
 	// ticket issued, redeemed, replayed
 	r := httptest.NewRequest("GET", "/_wap/sso?next="+url.QueryEscape("https://anysite.com/p"), nil)
 	r.Header.Set("Cookie", cookieName+"="+login)
@@ -338,11 +251,11 @@ func TestAuditLogRecordsSecurityEventsWithoutSecrets(t *testing.T) {
 		if m["msg"] != "audit" || m["time"] == nil {
 			t.Errorf("unexpected line shape: %v", m)
 		}
-		if m["event"] == "ticket_rejected" && m["reason"] != "replay" {
+		if m["event"] == "ticket_rejected" && m["reason"] != "unknown, expired or already used" {
 			t.Errorf("replay recorded with reason %v", m["reason"])
 		}
 	}
-	for _, secret := range []string{login, ticket, string(a.sessions.keys[0]), cookieName + "="} {
+	for _, secret := range []string{login, ticket, cookieName + "="} {
 		if strings.Contains(buf.String(), secret) {
 			t.Fatalf("the audit log leaked a secret: %q", secret)
 		}

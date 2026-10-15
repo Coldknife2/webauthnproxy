@@ -7,25 +7,28 @@ The others (.NET, Node, Python) use 4 to 7 times the memory and 10 to 14 times t
 
 ## Measured: the forwardAuth hot path in six implementations
 
-The hot path (`GET /_wap/verify`: check an HMAC-signed cookie, the host and the user, answer 200 with `X-Authenticated-User`) written the idiomatic way in each language,
+The hot path (`GET /_wap/verify`: hash the session cookie with SHA-256, look it up in the session table, check the host, expiry and user, answer 200 with `X-Authenticated-User`) written the idiomatic way in each language,
 run in containers, one process, same load generator and method as [performance.md](performance.md). Go "full app" is the real webauthnproxy.
 
-| | Image | Idle memory | Peak memory | 32 connections | CPU / 1000 req (4 conn.) | CPU / 1000 req (32 conn.) |
-|---|---|---|---|---|---|---|
-| **Rust** (axum, tokio, static musl) | **1 MiB** | **1 MiB** | **2 MiB** | 35.5k req/s | **55 ms** | 43 ms |
-| **Go**, minimal handler | 6 MiB | 6 MiB | 13 MiB | 35.1k req/s | 93 ms | 45 ms |
-| **Go**, full webauthnproxy | 12 MiB | 9 MiB | 16 MiB | 35.2k req/s | 91 ms | 45 ms |
-| .NET 9 (Kestrel, `aspnet:alpine`) | 116 MiB | 65 MiB | 72 MiB | 19.2k req/s | 132 ms | 78 ms |
-| Python 3.13 (uvicorn, one worker) | 153 MiB | 33 MiB | 33 MiB | 11.3k req/s | 105 ms | 83 ms |
-| Node 22 (built-in `http`) | 162 MiB | 50 MiB | 65 MiB | 10.5k req/s | 99 ms | 88 ms |
+| | Image | Idle memory | Peak memory | 4 connections | 32 connections | CPU / 1000 req (4 conn.) | CPU / 1000 req (32 conn.) |
+|---|---|---|---|---|---|---|---|
+| **Rust** (axum, tokio, static musl) | **1 MiB** | **1 MiB** | **2 MiB** | **26.3k req/s** | 46.1k req/s | **38 ms** | 35 ms |
+| **Go**, minimal handler | 6 MiB | 6 MiB | 13 MiB | 23.0k req/s | **51.9k req/s** | 57 ms | **28 ms** |
+| **Go**, full webauthnproxy | 12 MiB | 9 MiB | 16 MiB | 22.8k req/s | 50.3k req/s | 59 ms | 30 ms |
+| .NET 9 (Kestrel, `aspnet:alpine`) | 116 MiB | 64 MiB | 70 MiB | 24.6k req/s | 40.8k req/s | 61 ms | 33 ms |
+| Python 3.13 (uvicorn, one worker) | 153 MiB | 33 MiB | 33 MiB | 16.4k req/s | 27.2k req/s | 56 ms | 34 ms |
+| Node 22 (built-in `http`) | 162 MiB | 50 MiB | 65 MiB | 19.8k req/s | 26.9k req/s | 43 ms | 34 ms |
 
-Start to first answer: Rust 0.26 s, Go 0.28 to 0.33 s, Node 0.45 s, Python 0.74 s, .NET 0.79 s. Idle CPU: 0.00 % for Rust and Go, 0.07 % Node, 0.20 % .NET, 0.27 % Python.
+Start to first answer: Rust 0.20 s, Go 0.26 s, Python 0.72 s, .NET 2.1 s, Node 4.8 s (this run, container start included). Idle CPU: 0.00 % for Rust, Go and Node, 0.20 % .NET, 0.27 % Python.
+
+Rerun on 2026-10-14 after the session cookie became a hashed random token looked up in a table (the first run, with an HMAC-signed cookie, is in the git history). The check is cheaper for every language, so the gaps narrowed.
 
 **Reading it**
 
-- **Go and Rust are in the same league.** Same throughput and same CPU per request once the server is busy (32 connections); Rust uses about 40 % less CPU when lightly loaded, and a few MiB less memory.
-- **.NET, Node and Python are a different league** on this workload: 4 to 7 times the memory and 10 to 14 times the image of the Go app, and about half to a third of the throughput.
-  Node and Python run one process here (one core); several processes would raise throughput and multiply memory.
+- **Go and Rust are in the same league.** Rust leads with few connections (about 15 % more requests per second and a third less CPU per request at 4 connections) and uses a few MiB less memory; with 32 connections Go is ahead in this run (51.9k against 46.1k req/s).
+  The difference is within what one noisy VM can produce.
+- **.NET, Node and Python use much more memory and disk** on this workload: 4 to 7 times the memory and 10 to 14 times the image of the Go app. Their throughput is now closer than in the first run:
+  .NET reaches 80 % of Go's at 32 connections, Node and Python about 55 %. Node and Python run one process here (one core); several processes would raise throughput and multiply memory.
 - The Go "full app" costs only about 3 MiB more than a bare Go handler: embedded pages, the WebAuthn library and its JSON/CBOR parsing.
 
 **Caveats**
@@ -42,7 +45,7 @@ Start to first answer: Rust 0.26 s, Go 0.28 to 0.33 s, Node 0.45 s, Python 0.74 
   I did not audit any of them.
 - **A reverse proxy comes with Go's standard library.** `httputil.ReverseProxy` proxies HTTP and WebSocket upgrades; ours is about 30 lines. In Rust you assemble hyper, hyper-util and upgrade
   handling yourself or add a crate; .NET has Microsoft's YARP; Node and Python need third-party libraries.
-- **Few dependencies, easy to audit.** One direct dependency (the WebAuthn library; 22 modules in total, all transitive from it). HTTP server, proxy, HMAC, JSON, embedding and TLS-free networking come from the standard library.
+- **Few dependencies, easy to audit.** One direct dependency (the WebAuthn library; 22 modules in total, all transitive from it). HTTP server, proxy, SHA-256, JSON, embedding and TLS-free networking come from the standard library.
 - **One static binary, cross-compiled.** `CGO_ENABLED=0 GOOS=… GOARCH=…` gives the multi-architecture images without any emulation (see the `Dockerfile`). Rust's musl target works too (the prototype uses it);
   Node, Python and .NET ship a runtime in the image.
 - **Memory safety** is not a differentiator here: Go, Rust, C#, JavaScript and Python are all memory-safe. Rust additionally rules out data races at compile time, a modest benefit for about 1,400 lines.
@@ -53,5 +56,5 @@ Start to first answer: Rust 0.26 s, Go 0.28 to 0.33 s, Node 0.45 s, Python 0.74 
 
 - **Stay with Go.** It delivers 9 MiB idle and 0 % CPU, one static binary, a proxy in the standard library, and a codebase small enough to read in an afternoon.
 - **Consider Rust** if the target becomes tiny machines (a few MiB of RAM) or the lowest CPU at low load matters. Expect a rewrite of about 1,400 lines, a hand-built WebSocket-capable proxy
-  and an integration with webauthn-rs, for a memory saving I would estimate in the range of several MiB (not measured) and about 40 % less CPU when idle-ish.
-- **.NET** is a fine choice if your team lives in C#, but expect 7 to 10 times the memory without Native AOT. **Node and Python** are pleasant to write and poorly suited to this: single-threaded throughput and a 30 to 50 MiB floor.
+  and an integration with webauthn-rs, for a memory saving I would estimate in the range of several MiB (not measured) and about a third less CPU at low load.
+- **.NET** is a fine choice if your team lives in C#, but expect about 7 times the memory without Native AOT. **Node and Python** are pleasant to write but have a 30 to 50 MiB floor and, with one process, about half of Go's throughput here.

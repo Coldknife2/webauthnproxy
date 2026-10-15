@@ -19,11 +19,10 @@ Everything is set through environment variables.
 | `ENROLL_LISTEN` | `:8081` | Automatic enrollment port |
 | `TOOL_ENABLED` | `false` | Enable the static enrollment tool |
 | `TOOL_LISTEN` | `:8082` | Static tool port |
-| `DATA_DIR` | `/data` | `users.json`, `session.key`, `import/` folder (mount as a volume) |
-| `SESSION_SECRET` | generated | Cookie-signing secret, **32 characters minimum** (`openssl rand -base64 48`); otherwise 32 random bytes are generated in `DATA_DIR/session.key`. Changing it without `SESSION_SECRET_PREVIOUS` signs everybody out |
-| `SESSION_SECRET_PREVIOUS` | – | Former signing keys, comma-separated, still accepted for verification so a rotation signs nobody out. Also read from `DATA_DIR/session.key.previous`. Remove them after `SESSION_TTL` |
+| `DATA_DIR` | `/data` | `users.json`, `sessions.json`, `import/` folder, `admin.sock` (mount as a volume) |
+| `SESSION_BIND` | – | `ua`, `ip` or `ua,ip`: a session only works with the User-Agent and/or client address it was opened with. Off by default (browser updates and mobile networks change them; see [security.md](security.md#sessions-server-side)) |
 | `SESSION_TTL` | `12h` | Absolute session lifetime |
-| `SESSION_IDLE_TIMEOUT` | `0` (off) | Sign out after this long without activity (e.g. `30m`); shorter than `SESSION_TTL`. In forward mode add `addAuthCookiesToResponse=wap_session` to the Traefik middleware, otherwise active users are signed out too ([security.md](security.md#idle-timeout)) |
+| `SESSION_IDLE_TIMEOUT` | `0` (off) | End a session after this long without activity (e.g. `30m`); shorter than `SESSION_TTL`. Exact, recorded on the server: no Traefik option needed ([security.md](security.md#idle-timeout)) |
 | `TRUSTED_PROXIES` | – | Addresses or CIDR ranges of the reverse proxies whose `X-Forwarded-*` headers are believed (`172.18.0.0/16,10.0.0.5`). **Empty by default: no header is trusted.** Required in forward mode |
 | `COOKIE_SECURE` | `auto` | `auto`: `Secure` when the connection is HTTPS or a trusted proxy says so (and the login URL is https); `true` always; `false` never |
 | `RATE_LIMIT_IP` | `20/1m` | Login and enrollment requests allowed per client address (`N/duration`, e.g. `60/1h`; `0` or `off` disables). Answers `429` with `Retry-After` |
@@ -35,6 +34,8 @@ Everything is set through environment variables.
 
 Ports: only `8080` is meant to be reached by the public (through Traefik). **Never expose `8081` or `8082`**: loopback or a private network, and only while you enroll ([reverse-proxy.md](reverse-proxy.md)).
 
+`SESSION_SECRET` and `SESSION_SECRET_PREVIOUS` from earlier versions are ignored (sessions are server-side and unsigned); a warning is logged if they are set.
+
 ## Commands
 
 `webauthnproxy` without argument starts the service. With an argument it is a client of the running service (same `DATA_DIR`):
@@ -44,6 +45,8 @@ Ports: only `8080` is meant to be reached by the public (through Traefik). **Nev
 | `passkeys list` | one line per passkey: short id, user, `synced`/`device-bound`, transports, uses |
 | `passkeys revoke <id>` | delete a passkey and end its user's sessions; refuses the last passkey ([enrollment.md](enrollment.md#listing-and-revoking-passkeys)) |
 | `signout <user>` | end every session of a user, keep the passkeys |
+| `sessions list` | one line per live session: short id, user, site, creation, last activity, User-Agent |
+| `sessions revoke <id>` | end one session (prefix of 4+ characters of the id) |
 | `healthcheck` | exit status 0 when `GET /_wap/healthz` on `LISTEN` answers `200`; this is the image's `HEALTHCHECK` (no shell or curl in the image) |
 | `--version` | print the version |
 

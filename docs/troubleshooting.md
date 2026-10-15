@@ -15,5 +15,5 @@
 | `429 too many requests` | The login/enrollment rate limit (`RATE_LIMIT_IP`, `RATE_LIMIT_GLOBAL`). Behind a proxy, declare it in `TRUSTED_PROXIES`, otherwise every visitor shares the proxy's address and one budget. |
 | `403 caller is not a trusted proxy` | `/_wap/verify` was called from an address outside `TRUSTED_PROXIES`: put Traefik's network range there (`docker network inspect <network>`). |
 | Forward mode refuses to start: `needs TRUSTED_PROXIES` | Same: the service only believes `X-Forwarded-*` headers from declared proxies. |
-| Signed out after `SESSION_IDLE_TIMEOUT` while active (forward mode) | Add `addAuthCookiesToResponse: [wap_session]` to the Traefik forwardAuth middleware so the renewed cookie reaches the browser. |
+| Everybody is signed out after an upgrade from a version that used signed cookies | Expected once: sessions are now stored on the server (`DATA_DIR/sessions.json`); users sign in again. |
 | Can't find the bootstrap token | `podman logs webauthnproxy`, line "Enrollment bootstrap token". |

@@ -26,7 +26,7 @@ services:
       # Address range of Traefik on the compose network: the only caller whose X-Forwarded-* headers are believed (required).
       # Find it with: docker network inspect <project>_default
       TRUSTED_PROXIES: 172.18.0.0/16
-      # SESSION_IDLE_TIMEOUT: 30m           # optional; needs addAuthCookiesToResponse on the middleware below
+      # SESSION_IDLE_TIMEOUT: 30m           # optional: sign out after 30 minutes without activity
       # COOKIE_DOMAIN: example.com          # optional shortcut: shared cookie for the subdomains of one parent domain
       RP_ID: example.com                    # domain of the LOGIN host (passkeys live there, not on the protected sites)
       RP_ORIGINS: https://auth.example.com  # origin of the login page (+ the enrollment page's if enabled)
@@ -44,7 +44,6 @@ services:
       # Reusable middleware, attach it to any router
       - traefik.http.middlewares.passkey.forwardauth.address=http://webauthnproxy:8080/_wap/verify
       - traefik.http.middlewares.passkey.forwardauth.authResponseHeaders=X-Authenticated-User
-      # - traefik.http.middlewares.passkey.forwardauth.addAuthCookiesToResponse=wap_session   # with SESSION_IDLE_TIMEOUT
 
   mysite:
     image: docker.io/library/nginx:alpine

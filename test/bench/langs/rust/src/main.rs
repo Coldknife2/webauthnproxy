@@ -1,10 +1,19 @@
 use axum::{http::{HeaderMap, HeaderValue, StatusCode}, routing::get, Router};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SECRET: &[u8] = b"bench-secret-0123456789abcdef0123456789";
+// Same algorithm as the application: SHA-256 of the cookie value, lookup in a table of sessions (one entry, seeded at
+// start), audience and expiry checks, user lookup.
+const TOKEN: &str = "benchAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+struct Sess { user: &'static str, aud: &'static str, exp: u64 }
+
+static TABLE: LazyLock<HashMap<[u8; 32], Sess>> = LazyLock::new(|| {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    HashMap::from([(Sha256::digest(TOKEN.as_bytes()).into(), Sess { user: "bench", aud: "app.example.com", exp: now + 86400 })])
+});
 
 fn check(h: &HeaderMap) -> Option<String> {
     let host = h.get("x-forwarded-host")?.to_str().ok()?.to_ascii_lowercase();
@@ -13,21 +22,11 @@ fn check(h: &HeaderMap) -> Option<String> {
     }
     let cookie = h.get("cookie")?.to_str().ok()?;
     let tok = cookie.split(';').find_map(|c| c.trim().strip_prefix("wap_session="))?;
-    let (payload, sig) = tok.rsplit_once('.')?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(SECRET).ok()?;
-    mac.update(b"s|");
-    mac.update(payload.as_bytes());
-    mac.verify_slice(&B64.decode(sig).ok()?).ok()?; // constant-time
-    let mut p = payload.split('.');
-    let (user, aud, exp, _gen, _seen) = (p.next()?, p.next()?, p.next()?, p.next()?, p.next()?);
-    if p.next().is_some() || exp.parse::<u64>().ok()? < SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() {
+    let s = TABLE.get::<[u8; 32]>(&Sha256::digest(tok.as_bytes()).into())?;
+    if s.aud != host || s.exp < SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() {
         return None;
     }
-    if String::from_utf8(B64.decode(aud).ok()?).ok()? != host {
-        return None;
-    }
-    let user = String::from_utf8(B64.decode(user).ok()?).ok()?;
-    (user == "bench").then_some(user) // user lookup (in-memory set of one)
+    (s.user == "bench").then(|| s.user.to_string()) // user lookup (in-memory set of one)
 }
 
 async fn verify(h: HeaderMap) -> (StatusCode, HeaderMap) {

@@ -63,6 +63,8 @@ Without editing `users.json` and without opening port 8081, from the host that r
 docker exec webauthnproxy /webauthnproxy passkeys list
 docker exec webauthnproxy /webauthnproxy passkeys revoke <id>     # <id>: the tag shown by "list" (a prefix of 6+ characters is enough)
 docker exec webauthnproxy /webauthnproxy signout <user>           # end every session of a user, keep the passkeys
+docker exec webauthnproxy /webauthnproxy sessions list            # who is signed in: id, user, site, last activity, browser
+docker exec webauthnproxy /webauthnproxy sessions revoke <id>     # end one session (a lost laptop, a forgotten tab)
 ```
 
 (`podman exec` works the same.) `list` prints one line per passkey: short id, user, `synced` or `device-bound`, transports, number of uses.
@@ -84,13 +86,12 @@ The service refuses to delete the last passkey, so you cannot lock yourself out 
 
 1. Stop the container.
 2. Move the user database aside: `mv data/users.json data/users.json.lost`.
-3. **Revoke the old cookies**: delete `data/session.key` (and any `data/session.key.previous`), or change `SESSION_SECRET` and clear `SESSION_SECRET_PREVIOUS`, so no former key is accepted.
-   (Revocation state lives in `users.json`; a recreated user starts again at generation 0, which would make an old, unexpired cookie for the same user name valid again.)
+3. **End the old sessions**: delete `data/sessions.json`, so no cookie issued before the loss is accepted (a recreated user with the same name would otherwise inherit the old sessions).
 4. Start again with `ENROLL_ENABLED=true` and read `Enrollment bootstrap token: …` in the logs.
 5. Open the enrollment page, enter the token, create the first passkey, then a second one. Restart without `ENROLL_ENABLED`.
 
 Alternative without opening port 8081: create a passkey with the static tool on a new authenticator and drop the JSON file into `data/import/` (step 3 still applies).
 
-**Same caution when restoring a backup of `users.json`:** a copy older than a sign-out contains the older session generation, so cookies revoked by that sign-out work again. Replace the session key (without keeping the old one as previous) after a restore.
+**Same caution when restoring a backup:** an old `sessions.json` brings back sessions revoked after the backup was taken. Delete `sessions.json` after a restore.
 
-*What is tested:* listing, revoking (prefix, ambiguity, last passkey, unknown id), sign-out, the socket mode and the absence of these routes on the network ports are covered by `admin_test.go`.  the empty-database bootstrap (first passkey with the token) and the import path are covered by the unit and e2e tests. The file-deletion procedure above reaches the same empty state but is not exercised as a scenario of its own, and the cookie-revival caveat is documented, not tested.
+*What is tested:* listing, revoking (prefix, ambiguity, last passkey, unknown id), sign-out, the socket mode and the absence of these routes on the network ports are covered by `admin_test.go`.  the empty-database bootstrap (first passkey with the token) and the import path are covered by the unit and e2e tests. The file-deletion procedure above reaches the same empty state but is not exercised as a scenario of its own, and the restore caveat is documented, not tested.

@@ -17,7 +17,7 @@ fs.writeFileSync(dyn, `http:
     auth: {rule: "Host(\`auth.test.local\`)", service: auth, entryPoints: [web]}
     app:  {rule: "Host(\`app.test.local\`)",  service: app,  entryPoints: [web], middlewares: [wap]}
   middlewares:
-    wap: {forwardAuth: {address: "http://127.0.0.1:8080/_wap/verify", authResponseHeaders: [X-Authenticated-User], addAuthCookiesToResponse: [wap_session]}}
+    wap: {forwardAuth: {address: "http://127.0.0.1:8080/_wap/verify", authResponseHeaders: [X-Authenticated-User]}}
   services:
     auth: {loadBalancer: {servers: [{url: "http://127.0.0.1:8080"}]}}
     app:  {loadBalancer: {servers: [{url: "http://127.0.0.1:9000"}]}}
@@ -62,16 +62,16 @@ const until = async (f, ms = 15000) => { const t = Date.now(); while (Date.now()
     await page.waitForTimeout(1500);
     assert.ok(!page.url().includes("evil.com")); step("open redirect (next=evil.com) neutralized");
 
-    // Idle timeout (6 s here): activity keeps the session alive because verify re-issues the cookie (Traefik copies it
-    // with addAuthCookiesToResponse); without activity the session ends. No server-side state is involved.
+    // Idle timeout (6 s here): the server records the last activity of the session, so activity keeps it alive with the
+    // same cookie (no Traefik option needed); without activity the session ends.
     const sess = async () => (await ctx.cookies()).find((c) => c.name === "wap_session" && c.value)?.value;
     const body = async () => { await page.goto("http://app.test.local:8000/page"); return page.textContent("body"); };
     assert.match(await body(), /SECRET user=remi/);   // fresh activity right before the timed part (the steps above can take seconds)
     const v0 = await sess();
     await page.waitForTimeout(4000); assert.match(await body(), /SECRET user=remi/);
-    const v1 = await sess(); assert.notEqual(v1, v0, "the cookie was not renewed");
-    await page.waitForTimeout(4000); assert.match(await body(), /SECRET user=remi/);   // 8 s after login: still signed in thanks to the renewal
-    step("idle timeout: activity renews the cookie through Traefik, the session outlives the idle timeout");
+    const v1 = await sess(); assert.equal(v1, v0, "the cookie value must not change: activity is recorded on the server");
+    await page.waitForTimeout(4000); assert.match(await body(), /SECRET user=remi/);   // 8+ s after login: still signed in because each visit counts as activity
+    step("idle timeout: activity keeps the session alive with an unchanged cookie, beyond the idle timeout");
     await page.waitForTimeout(8000);
     await page.goto("http://app.test.local:8000/page");
     assert.match(page.url(), /^http:\/\/auth\.test\.local:8000\/_wap\/login/);

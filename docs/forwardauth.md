@@ -22,7 +22,7 @@ subdomains of one parent domain. For the general case, the login host therefore 
 1. Browser ─► anysite.com/page ─► Traefik ─► /_wap/verify: no cookie for this site
               └─► 302 https://auth.com/_wap/sso?next=https://anysite.com/page
 2. auth.com: not signed in yet ─► passkey login (once)
-3. auth.com ─► 302 https://anysite.com/_wap/callback?ticket=…     ticket: signed, single-use, valid 60 s, for anysite.com only
+3. auth.com ─► 302 https://anysite.com/_wap/callback?ticket=…     ticket: random, single-use, valid 60 s, for anysite.com only
 4. Traefik ─► /_wap/verify (callback) ─► sets a cookie for anysite.com only ─► 302 /page
 5. Next requests: /_wap/verify checks that cookie.  Another site (other.org): steps 1, 3, 4 again, without a new passkey prompt.
 ```
@@ -44,12 +44,11 @@ for them. You can combine both: sites inside `COOKIE_DOMAIN` use the shared cook
 
 Security properties of the exchange:
 
-- Tickets are HMAC-signed, expire after 60 s, are accepted **once**, and only for the host they were issued for.
+- Tickets are random values kept in the service's memory, expire after 60 s, are accepted **once** (even a refused presentation burns them), and only for the host they were issued for.
 - A site's cookie is **bound to its host**: if one protected site's backend leaks the cookie it receives (Traefik forwards cookies), it is useless on any other site.
 - Users deleted from the database lose access on the very next request, on every site.
-- **Sign-out revokes everything.** Signing out on the login host (the *Sign out* button of `https://auth.com/`) or sending
-  `POST https://anysite.com/_wap/logout` bumps the user's session generation: every cookie and ticket issued before, on any site or device, stops working immediately,
-  even if someone copied it. A `GET` on `/_wap/logout` only clears the cookie of that site (a link on a hostile page cannot sign you out everywhere).
-  Revocation is per user, not per session. The `/_wap/` prefix is reserved on protected sites too.
+- **Sign-out revokes on the server.** *Sign out* on the login host (`https://auth.com/`) or `POST https://anysite.com/_wap/logout` ends this browser's login session and every site session opened from it, even a copied cookie;
+  other devices stay signed in. *Sign out of all devices* (second button, `?all=1`) and `webauthnproxy signout <user>` end all of the user's sessions; `sessions revoke <id>` ends one.
+  A `GET` on `/_wap/logout` only clears the cookie of that site (a link on a hostile page cannot sign you out). The `/_wap/` prefix is reserved on protected sites too.
 - `/_wap/verify` must only be reachable by Traefik: exclude it from the login host's public router. There are no per-site rules: any enrolled passkey grants access to **all** listed sites.
 - Threat model, what is tested and what is not: [security.md](security.md#cross-domain-login-threat-model). Traefik headers and exposure: [reverse-proxy.md](reverse-proxy.md).

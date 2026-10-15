@@ -37,8 +37,6 @@ type App struct {
 	login    *Ceremonies[webauthn.SessionData]
 	enroll   *Ceremonies[enrollState]
 
-	seen Seen // used ticket nonces
-
 	audit       *Audit   // nil = audit log disabled
 	ipLimit     *Limiter // login and enrollment requests per client address
 	globalLimit *Limiter // login and enrollment requests in total
@@ -158,10 +156,10 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 			case prefix + "/callback": // the login host sent the user back with a ticket
 				a.callback(w, r, host, p.Query())
 				return
-			case prefix + "/logout": // POST: sign out everywhere; any other method: only forget this site's cookie
+			case prefix + "/logout": // POST: sign this browser out (the login session and its sites); any other method: only forget this site's cookie
 				if r.Header.Get("X-Forwarded-Method") == http.MethodPost {
 					if se, ok := a.sessionFor(r); ok && (se.Aud == host || (se.Aud == "" && a.cfg.InCookieDomain(host))) {
-						a.revoke(r, se.User, "site", host)
+						a.revoke(r, se, "site", host)
 					}
 				}
 				http.SetCookie(w, a.hostCookie(r, "", -1))
@@ -174,7 +172,6 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 	// A cookie is valid for this site if it was issued for this very host, or if it is the shared
 	// login-host cookie and the site lies within COOKIE_DOMAIN.
 	if se, ok := a.sessionFor(r); ok && (se.Aud == host || (se.Aud == "" && a.cfg.InCookieDomain(host))) {
-		a.refresh(w, r, se)
 		w.Header().Set(a.cfg.UserHeader, se.User)
 		w.WriteHeader(http.StatusOK)
 		return
@@ -189,20 +186,15 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) {
 
 // callback exchanges a ticket for a host-only session cookie, then sends the user to the page they asked for.
 func (a *App) callback(w http.ResponseWriter, r *http.Request, host string, q url.Values) {
-	user, aud, gen, nonce, exp, err := a.sessions.VerifyTicket(q.Get("ticket"))
-	if err != nil || aud != host {
-		a.auditReq(r, "ticket_rejected", "site", host, "reason", "invalid, expired or issued for another site")
-		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
-		return
+	user, parent, why := a.sessions.ConsumeTicket(q.Get("ticket"), host)
+	if why == "" && !a.store.Has(user) {
+		why = "user no longer exists"
 	}
-	// a ticket issued before a sign-out ("revocation") must not open a new session
-	if cur, ok := a.store.Gen(user); !ok || cur != gen {
-		a.auditReq(r, "ticket_rejected", "site", host, "user", user, "reason", "revoked")
-		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
-		return
+	if why == "" && !a.sessions.Alive(parent) {
+		why = "login session ended" // signed out between the ticket's issue and its use
 	}
-	if !a.seen.Mark(nonce, exp) {
-		a.auditReq(r, "ticket_rejected", "site", host, "user", user, "reason", "replay")
+	if why != "" {
+		a.auditReq(r, "ticket_rejected", "site", host, "reason", why)
 		http.Error(w, "invalid or expired ticket", http.StatusForbidden)
 		return
 	}
@@ -212,7 +204,7 @@ func (a *App) callback(w http.ResponseWriter, r *http.Request, host string, q ur
 	}
 	proto := a.scheme(r)
 	a.auditReq(r, "site_login", "user", user, "site", host)
-	http.SetCookie(w, a.hostCookie(r, a.sessions.New(user, host, gen), int(a.cfg.SessionTTL.Seconds())))
+	http.SetCookie(w, a.hostCookie(r, a.sessions.Create(user, host, parent, r.UserAgent(), a.bindIP(r)), int(a.cfg.SessionTTL.Seconds())))
 	// Absolute URL: Traefik resolves a relative Location against the auth service's own address.
 	http.Redirect(w, r, proto+"://"+host+next, http.StatusFound)
 }
@@ -225,19 +217,19 @@ func (a *App) sso(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
-	name, ok := a.currentUser(r)
-	if !ok {
+	se, ok := a.sessionFor(r)
+	if !ok || se.Aud != "" {
 		http.Redirect(w, r, prefix+"/login?next="+url.QueryEscape(next), http.StatusFound)
 		return
 	}
+	name := se.User
 	u, _ := url.Parse(next) // safeNext guarantees a valid absolute URL
 	if a.cfg.InCookieDomain(u.Host) {
 		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
-	gen, _ := a.store.Gen(name)
 	a.auditReq(r, "ticket_issued", "user", name, "site", strings.ToLower(u.Host))
-	cb := u.Scheme + "://" + u.Host + prefix + "/callback?ticket=" + url.QueryEscape(a.sessions.NewTicket(name, strings.ToLower(u.Host), gen)) +
+	cb := u.Scheme + "://" + u.Host + prefix + "/callback?ticket=" + url.QueryEscape(a.sessions.NewTicket(name, strings.ToLower(u.Host), se.Handle())) +
 		"&next=" + url.QueryEscape(u.RequestURI())
 	http.Redirect(w, r, cb, http.StatusFound)
 }
@@ -249,13 +241,13 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, prefix+"/login", http.StatusFound)
 		return
 	}
-	signedIn, signOut := "Signed in as", "Sign out"
+	signedIn, signOut, signOutAll := "Signed in as", "Sign out", "Sign out of all devices"
 	if r.URL.Query().Get("lang") == "fr" {
-		signedIn, signOut = "Connecté en tant que", "Se déconnecter"
+		signedIn, signOut, signOutAll = "Connecté en tant que", "Se déconnecter", "Se déconnecter de tous les appareils"
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Session</title><body style="font-family:system-ui;text-align:center;margin-top:20vh"><p>%s <b>%s</b></p><form method=post action="%s/logout"><button>%s</button></form>`,
-		signedIn, html.EscapeString(name), prefix, signOut)
+	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Session</title><body style="font-family:system-ui;text-align:center;margin-top:20vh"><p>%s <b>%s</b></p><form method=post action="%s/logout"><button>%s</button></form><form method=post action="%s/logout?all=1"><button>%s</button></form>`,
+		signedIn, html.EscapeString(name), prefix, signOut, prefix, signOutAll)
 }
 
 // safeNext only allows local paths and, in forward mode, absolute URLs of allowed hosts.
@@ -286,58 +278,44 @@ func (a *App) loginTarget(next string) string {
 	return prefix + "/sso?next=" + url.QueryEscape(n)
 }
 
-// sessionFor returns the session carried by the request's cookie: signature, expiry, idle timeout, user and
-// session generation (a deleted user, or a sign-out since the token was issued, invalidates it) are checked.
+// sessionFor returns the session carried by the request's cookie: it must exist, be neither expired nor idle,
+// match the binding (SESSION_BIND), and belong to a user that still exists.
 func (a *App) sessionFor(r *http.Request) (Session, bool) {
 	c, err := r.Cookie(cookieName)
 	if err != nil {
 		return Session{}, false
 	}
-	se, err := a.sessions.VerifySession(c.Value)
-	if err != nil {
-		return Session{}, false
-	}
-	if cur, ok := a.store.Gen(se.User); !ok || cur != se.Gen {
+	se, ok := a.sessions.Lookup(c.Value, r.UserAgent(), a.bindIP(r))
+	if !ok || !a.store.Has(se.User) {
 		return Session{}, false
 	}
 	return se, true
 }
 
-// session returns the signed-in user and the audience of the session cookie.
-func (a *App) session(r *http.Request) (name, aud string, ok bool) {
-	se, ok := a.sessionFor(r)
-	return se.User, se.Aud, ok
+// bindIP is the client address used for SESSION_BIND=ip; it is only computed when that option is on.
+func (a *App) bindIP(r *http.Request) string {
+	if !a.sessions.bind.IP {
+		return ""
+	}
+	return a.clientIP(r).String()
 }
 
 // currentUser returns the user of a login-host session (audience "").
 func (a *App) currentUser(r *http.Request) (string, bool) {
-	name, aud, ok := a.session(r)
-	return name, ok && aud == ""
+	se, ok := a.sessionFor(r)
+	return se.User, ok && se.Aud == ""
 }
 
-// refresh re-issues the session cookie with a fresh last-activity time when the idle timeout is on and the
-// last activity is old enough. The absolute expiry never moves. Stateless: the new time lives in the cookie.
-func (a *App) refresh(w http.ResponseWriter, r *http.Request, se Session) {
-	if !a.sessions.NeedsRenewal(se) {
-		return
-	}
-	maxAge := int(se.Exp.Sub(a.sessions.now()).Seconds())
-	if maxAge <= 0 {
-		return
-	}
-	if tok := a.sessions.Renew(se); se.Aud == "" {
-		http.SetCookie(w, a.cookie(r, tok, maxAge))
-	} else {
-		http.SetCookie(w, a.hostCookie(r, tok, maxAge))
-	}
+// revoke signs a browser out: the session, the login session it came from and the sites opened from it.
+func (a *App) revoke(r *http.Request, se Session, via, site string) {
+	n := a.sessions.RevokeTree(se)
+	a.auditReq(r, "sign_out", "user", se.User, "scope", "this browser", "sessions", n, "via", via, "site", site)
 }
 
-// revoke signs the user out everywhere (see Store.Revoke) and records it.
-func (a *App) revoke(r *http.Request, user, via, site string) {
-	if err := a.store.Revoke(user); err != nil {
-		log.Printf("sign-out: cannot persist revocation: %v", err)
-	}
-	a.auditReq(r, "sign_out", "user", user, "scope", "all sessions", "via", via, "site", site)
+// revokeAll signs a user out of every device.
+func (a *App) revokeAll(r *http.Request, user, via string) {
+	n := a.sessions.RevokeUser(user)
+	a.auditReq(r, "sign_out", "user", user, "scope", "all sessions", "sessions", n, "via", via)
 }
 
 func (a *App) requireAuth(next http.Handler) http.Handler {
@@ -351,7 +329,6 @@ func (a *App) requireAuth(next http.Handler) http.Handler {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
-		a.refresh(w, r, se)
 		// The user name is passed in a header; any client-supplied value is overwritten.
 		r.Header.Set(a.cfg.UserHeader, se.User)
 		next.ServeHTTP(w, r)
@@ -428,8 +405,11 @@ func (a *App) loginFinish(w http.ResponseWriter, r *http.Request) {
 	u := user.(*User)
 	_ = a.store.UpdateCredential(u.ID, cred)
 	a.auditReq(r, "login_success", "user", u.Name, "credential", credTag(cred.ID))
-	gen, _ := a.store.Gen(u.Name)
-	http.SetCookie(w, a.cookie(r, a.sessions.New(u.Name, "", gen), int(a.cfg.SessionTTL.Seconds())))
+	tok := a.sessions.Create(u.Name, "", "", r.UserAgent(), a.bindIP(r))
+	if old, ok := a.sessionFor(r); ok && old.Aud == "" && old.User == u.Name {
+		a.sessions.Replace(old, tok) // signing in again in the same browser supersedes the previous login session
+	}
+	http.SetCookie(w, a.cookie(r, tok, int(a.cfg.SessionTTL.Seconds())))
 	writeJSON(w, 200, map[string]string{"next": a.loginTarget(r.URL.Query().Get("next"))})
 }
 
@@ -503,8 +483,12 @@ func (a *App) enrollGuard(next http.Handler) http.Handler {
 // logout signs the user out everywhere: the cookie is cleared and every session and ticket issued so far
 // (other devices, other protected sites, a copied cookie) is revoked.
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
-	if name, ok := a.currentUser(r); ok {
-		a.revoke(r, name, "login host", "")
+	if se, ok := a.sessionFor(r); ok && se.Aud == "" {
+		if r.URL.Query().Get("all") == "1" || r.FormValue("all") == "1" {
+			a.revokeAll(r, se.User, "login host")
+		} else {
+			a.revoke(r, se, "login host", "")
+		}
 	}
 	http.SetCookie(w, a.cookie(r, "", -1))
 	http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
@@ -649,6 +633,9 @@ func (a *App) deleteCredential(w http.ResponseWriter, r *http.Request) {
 	if err := a.store.DeleteCredential(uid, cid); err != nil {
 		jsonErr(w, 500, err.Error())
 		return
+	}
+	if who != "" && !a.store.Has(who) { // its last passkey is gone: end the user's sessions
+		a.sessions.RevokeUser(who)
 	}
 	a.auditReq(r, "credential_deleted", "user", who, "credential", credTag(cid), "via", "web")
 	writeJSON(w, 200, map[string]string{"ok": "true"})

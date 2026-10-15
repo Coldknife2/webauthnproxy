@@ -15,7 +15,7 @@ Environment: WAP_IMAGE (default webauthnproxy), AUTHELIA_IMAGE (default docker.i
 POCKETID_IMAGE (default docker.io/pocketid/pocket-id:v2), TINYAUTH_IMAGE (default ghcr.io/tinyauthapp/tinyauth:v5),
 BENCH_SETTLE (seconds to wait before the idle measurement, default 45), BENCH_DURATION (default 10).
 """
-import base64, hashlib, hmac, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
+import base64, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
 
 RT = os.environ.get("RUNTIME") or ("podman" if shutil.which("podman") else "docker")
 WAP = os.environ.get("WAP_IMAGE", "webauthnproxy")
@@ -26,7 +26,7 @@ SETTLE = int(os.environ.get("BENCH_SETTLE", "45"))
 DUR = os.environ.get("BENCH_DURATION", "10") + "s"
 HERE = os.path.dirname(os.path.abspath(__file__))
 TMP = tempfile.mkdtemp(prefix="wap-bench-")
-SECRET = "bench-secret-0123456789abcdef0123456789"
+TOKEN = "benchAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"   # the session cookie value of the benchmark; only its hash is written to sessions.json
 TICK = os.sysconf("SC_CLK_TCK")
 
 
@@ -41,9 +41,12 @@ def b64(x):
     return base64.urlsafe_b64encode(x).rstrip(b"=").decode()
 
 
-def wap_cookie(user, aud):
-    p = ".".join([b64(user.encode()), b64(aud.encode()), str(int(time.time()) + 86400), "0", str(int(time.time()))])  # user.aud.exp.gen.seen
-    return p + "." + b64(hmac.new(SECRET.encode(), ("s|" + p).encode(), hashlib.sha256).digest())
+def seed_sessions(data, aud="app.example.com"):
+    """Write a sessions.json holding one live session for TOKEN (the service loads it at start)."""
+    now = int(time.time())
+    row = {"h": b64(hashlib.sha256(TOKEN.encode()).digest()), "user": "bench", "aud": aud, "created": now, "exp": now + 86400, "seen": now}
+    json.dump([row], open(f"{data}/sessions.json", "w"))
+    os.chown(f"{data}/sessions.json", 65532, 65532)
 
 
 def pid_of(name):
@@ -124,14 +127,15 @@ def main():
         json.dump({"users": [{"id": base64.b64encode(uid).decode(), "name": "bench",
                               "credentials": [{"id": "AQID", "publicKey": "AQID"}]}]}, open(f"{data}/users.json", "w"))
         os.chown(data, 65532, 65532); os.chown(f"{data}/users.json", 65532, 65532)
+        seed_sessions(data)
         t0 = time.time()
         sh(RT, "run", "-d", "--name", "wap-bench", "-p", "18080:8080", "-v", f"{data}:/data",
            "-e", "MODE=forward", "-e", "LOGIN_URL=https://auth.example.com/_wap/login", "-e", "ALLOWED_HOSTS=app.example.com",
-           "-e", "RP_ID=example.com", "-e", "RP_ORIGINS=https://auth.example.com", "-e", f"SESSION_SECRET={SECRET}",
+           "-e", "RP_ID=example.com", "-e", "RP_ORIGINS=https://auth.example.com",
            "-e", "TRUSTED_PROXIES=0.0.0.0/0", WAP)  # benchmark only: the load generator is the "proxy"
         wait_http("http://127.0.0.1:18080/_wap/verify"); up = time.time() - t0
         hdr = ["Host: app.example.com", "X-Forwarded-Host: app.example.com", "X-Forwarded-Uri: /",
-               "Cookie: wap_session=" + wap_cookie("bench", "app.example.com")]
+               "Cookie: wap_session=" + TOKEN]
         results["webauthnproxy"] = measure("wap", pid_of("wap-bench"), "http://127.0.0.1:18080/_wap/verify", hdr, up)
         results["webauthnproxy"]["image_mib"] = image_mib(WAP)
         sh(RT, "rm", "-f", "wap-bench")

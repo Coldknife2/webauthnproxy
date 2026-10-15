@@ -67,7 +67,7 @@ TRUSTED_PROXIES=172.18.0.0/16   # Traefik's address range: required, nobody else
 - traefik.http.routers.mysite.middlewares=passkey
 ```
 
-**Several unrelated domains?** That is the case this mode is built for (`auth.com` protecting `anysite.com` and `other.org`). With **one domain and its subdomains** you do not need it: [Tinyauth](https://tinyauth.app) or [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) are enough, and passkey-forwardauth has the stronger session model ([comparison and my conclusion](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth)).
+**Several unrelated domains?** That is the case this mode is built for (`auth.com` protecting `anysite.com` and `other.org`). With **one domain and its subdomains** you do not need it: [Tinyauth](https://tinyauth.app) or [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) are enough, and the difference with this project is small ([comparison and my conclusion](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth)).
 
 Complete, tested examples (`make examples`): [one site behind Traefik](examples/proxy-traefik) · [two unrelated domains](examples/two-domains).
 
@@ -85,7 +85,7 @@ How the cross-domain login works: [docs/forwardauth.md](docs/forwardauth.md). Ex
 
 The static tool must be served over HTTPS under your `RP_ID` domain (not `file://`). Details: [docs/enrollment.md](docs/enrollment.md).
 
-List or revoke a passkey without editing `users.json`: `docker exec webauthnproxy /webauthnproxy passkeys list` / `passkeys revoke <id>` / `signout <user>`.
+List or revoke a passkey without editing `users.json`: `docker exec webauthnproxy /webauthnproxy passkeys list` / `passkeys revoke <id>` / `sessions list` / `sessions revoke <id>` / `signout <user>`.
 The image has a `HEALTHCHECK` (`webauthnproxy healthcheck`).
 
 ### Configure
@@ -95,13 +95,12 @@ The image has a `HEALTHCHECK` (`webauthnproxy healthcheck`).
 | `UPSTREAM` | – | proxy mode: site to protect |
 | `RP_ID`, `RP_ORIGINS` | – | WebAuthn domain and allowed origins (required) |
 | `LOGIN_URL`, `ALLOWED_HOSTS` | – | forward mode: login page, sites shortlist |
-| `SESSION_SECRET` | generated | cookie-signing key, 32 characters minimum |
 | `TRUSTED_PROXIES` | – | forward mode: CIDRs whose `X-Forwarded-*` are believed (required; never trusted by default) |
 | `SESSION_TTL`, `SESSION_IDLE_TIMEOUT` | `12h`, off | session lifetime, sign-out after inactivity |
-| `SESSION_SECRET_PREVIOUS` | – | former signing keys still accepted (rotation without signing everyone out) |
+| `SESSION_BIND` | – | `ua`, `ip` or `ua,ip`: tie a session to the browser's User-Agent / address |
 | `RATE_LIMIT_IP`, `RATE_LIMIT_GLOBAL` | `20/1m`, `200/1m` | login and enrolment requests per client address / in total (`429`) |
 | `AUDIT_LOG` | `true` | JSON audit events on standard output |
-| `DATA_DIR` | `/data` | `users.json`, `session.key`, `import/` |
+| `DATA_DIR` | `/data` | `users.json`, `sessions.json`, `import/` |
 
 All variables, ports, security model, troubleshooting: [docs/configuration.md](docs/configuration.md) · [docs/security.md](docs/security.md) · [docs/troubleshooting.md](docs/troubleshooting.md).
 
@@ -116,9 +115,8 @@ All variables, ports, security model, troubleshooting: [docs/configuration.md](d
 
 - **Browser only.** Signing in needs an interactive browser (passkey prompt and redirects). Native and mobile apps, API clients, WebDAV/CalDAV and Vaultwarden-style clients cannot sign in and get `401`.
   For apps that speak OIDC, prefer an identity provider such as Pocket ID.
-- **Stateless cookies.** A session is a signed cookie: revocation is **per user** ("sign out everywhere"), not per session, and a stolen cookie works until `SESSION_TTL` (12 h by default) or until the user signs out.
-  Rotate the key without signing anyone out with `SESSION_SECRET_PREVIOUS`; dropping the old key signs everybody out; passkeys are not affected. [Details](docs/security.md#session-tokens-hmac-signed-cookies).
-- **No remote account recovery.** If every passkey is lost, you recover from the host: move `users.json` aside, rotate the session key, enroll again with the bootstrap token.
+- **Bearer cookies.** A session is a random cookie kept on the server: you can list and revoke it (`sessions list` / `sessions revoke`), but a stolen cookie works until `SESSION_TTL` (12 h by default), the idle timeout, or its revocation. Optional `SESSION_BIND` ties it to the browser's User-Agent/address. [Details](docs/security.md#sessions-server-side).
+- **No remote account recovery.** If every passkey is lost, you recover from the host: move `users.json` and `sessions.json` aside, enroll again with the bootstrap token.
   **Enroll at least two passkeys** on different authenticators. [Procedure](docs/enrollment.md#account-recovery-lost-passkeys).
 - **New, unaudited, one maintainer.** First commit 2026-10-14. Rate limiting and the audit log are minimal (per process, in memory), a single instance (no high availability), no per-site rules: any enrolled passkey opens every listed site.
 
@@ -129,7 +127,7 @@ All variables, ports, security model, troubleshooting: [docs/configuration.md](d
 - You need several users with groups, per-site rules or delegated administration.
 - The environment is critical or must be audited, or you need high availability, per-session revocation or IP/device binding.
 - You only need nginx `auth_request`: [Quiq/webauthn_proxy](https://github.com/Quiq/webauthn_proxy) has been maintained since 2022.
-- Your sites share one domain and you only need Traefik forward-auth: [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) has per-session revocation; this project's edge is elsewhere ([why](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth)).
+- Your sites share one domain and you only need Traefik forward-auth: [passkey-forwardauth](https://github.com/QirunGao/passkey-forwardauth) or Tinyauth do the job and are older; this project's edge is elsewhere ([why](docs/alternatives.md#why-this-project-rather-than-passkey-forwardauth)).
 
 ## Why this one
 
@@ -157,5 +155,12 @@ Performance measurements are an **experiment**, not a promise: how they were run
 CI ([`ci.yml`](.github/workflows/ci.yml)) tests, then builds and pushes the image to `ghcr.io` on `main` and `v*` tags.
 Setup and releases: [CONTRIBUTING.md](CONTRIBUTING.md#set-up-ci-and-publish-images). Vulnerabilities: [SECURITY.md](SECURITY.md).
 Web UI is English; add `?lang=fr` for French.
+
+## Thanks
+
+The server-side sessions (random token, only its hash stored, per-session revocation, idle timeout, optional User-Agent/IP binding) follow the design of
+[**QirunGao/passkey-forwardauth**](https://github.com/QirunGao/passkey-forwardauth) (Apache-2.0), which got there first; so does the idea of trusting forwarded headers only from declared proxies.
+The design was read and re-implemented; no code was copied. [**Quiq/webauthn_proxy**](https://github.com/Quiq/webauthn_proxy) (Apache-2.0) has been showing since 2022 that a small passkey gate for self-hosters is worth having.
+Thank you both, and the authors of [go-webauthn](https://github.com/go-webauthn/webauthn), which does the WebAuthn work here. Credits and what differs: [docs/alternatives.md](docs/alternatives.md).
 
 MIT — [LICENSE](LICENSE)

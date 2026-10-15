@@ -24,7 +24,7 @@ func testApp(t testing.TB) *App {
 		cfg:      &Config{Mode: "proxy", SessionTTL: time.Hour, CookieSecure: "auto"},
 		store:    store,
 		wa:       wa,
-		sessions: NewSessions([]byte("0123456789abcdef0123456789abcdef"), nil, time.Hour, 0),
+		sessions: mustSessions(t, "", time.Hour, 0, Binding{}),
 		login:    NewCeremonies[webauthn.SessionData](),
 		enroll:   NewCeremonies[enrollState](),
 	}
@@ -65,7 +65,7 @@ func addUser(t testing.TB, a *App) string {
 	if err := a.store.AddCredential(u, &webauthn.Credential{ID: []byte("c1")}); err != nil {
 		t.Fatal(err)
 	}
-	return a.sessions.New("remi", "", 0)
+	return mk(a, "remi", "")
 }
 
 func TestEnrollRequiresSessionOnceUsersExist(t *testing.T) {

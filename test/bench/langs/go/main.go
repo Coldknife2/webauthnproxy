@@ -1,19 +1,23 @@
 package main
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
 
-var secret = []byte("bench-secret-0123456789abcdef0123456789")
-var b64 = base64.RawURLEncoding
+// Same algorithm as the application: SHA-256 of the cookie value, lookup in a table of sessions (here one entry,
+// seeded at start like the benchmark seeds sessions.json), audience and expiry checks, user lookup.
+type sess struct {
+	user, aud string
+	exp       int64
+}
 
-func dec(s string) string { b, _ := b64.DecodeString(s); return string(b) }
+const token = "benchAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+var table = map[[32]byte]sess{sha256.Sum256([]byte(token)): {"bench", "app.example.com", time.Now().Unix() + 86400}}
+var users = map[string]bool{"bench": true}
 
 func check(r *http.Request) string {
 	host := strings.ToLower(r.Header.Get("X-Forwarded-Host"))
@@ -24,28 +28,11 @@ func check(r *http.Request) string {
 	if err != nil {
 		return ""
 	}
-	i := strings.LastIndexByte(c.Value, '.')
-	if i < 0 {
+	s, ok := table[sha256.Sum256([]byte(c.Value))]
+	if !ok || s.aud != host || s.exp < time.Now().Unix() || !users[s.user] {
 		return ""
 	}
-	payload := c.Value[:i]
-	m := hmac.New(sha256.New, secret)
-	m.Write([]byte("s|" + payload))
-	got, err := b64.DecodeString(c.Value[i+1:])
-	if err != nil || !hmac.Equal(got, m.Sum(nil)) {
-		return ""
-	}
-	f := strings.Split(payload, ".")
-	if len(f) != 5 {
-		return ""
-	}
-	if exp, err := strconv.ParseInt(f[2], 10, 64); err != nil || exp < time.Now().Unix() || dec(f[1]) != host {
-		return ""
-	}
-	if user := dec(f[0]); user == "bench" { // user lookup (in-memory set of one)
-		return user
-	}
-	return ""
+	return s.user
 }
 
 func main() {

@@ -43,13 +43,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("database: %v", err)
 	}
-	secret, previous, err := loadSecrets(cfg.DataDir, cfg.SessionSecret, cfg.SessionPrevious)
+	sessions, err := NewSessions(cfg.DataDir, cfg.SessionTTL, cfg.IdleTimeout, cfg.SessionBind)
 	if err != nil {
-		log.Fatalf("session secret: %v", err)
+		log.Fatalf("sessions: %v", err)
 	}
-	if len(previous) > 0 {
-		log.Printf("session key rotation: %d previous key(s) still accepted for verification", len(previous))
-	}
+	sessions.Run()
+	defer sessions.Stop()
 	audit := NewAudit(os.Stdout, cfg.AuditLog)
 
 	uv := protocol.VerificationRequired
@@ -77,7 +76,7 @@ func main() {
 		cfg:      cfg,
 		store:    store,
 		wa:       wa,
-		sessions: NewSessions(secret, previous, cfg.SessionTTL, cfg.IdleTimeout),
+		sessions: sessions,
 		login:    NewCeremonies[webauthn.SessionData](),
 		enroll:   NewCeremonies[enrollState](),
 

@@ -80,6 +80,6 @@ const until = async (f, ms = 15000) => { const t = Date.now(); while (Date.now()
   } finally {
     await browser.close(); proxy.kill(); upstream.close();
     try { execFileSync(RUNTIME, ["kill", "wap-e2e-traefik"]); } catch {}
-    fs.rmSync(data, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 })().catch((e) => { console.error("FAILED:", e); process.exit(1); });

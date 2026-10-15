@@ -44,5 +44,5 @@ const post = (port, p, headers = {}) => fetch(`http://127.0.0.1:${port}${p}`, { 
     assert.ok(events.some((e) => e.event === "rate_limited" && e.scope === "client" && e.ip === "127.0.0.1"));
     step("audit log: rate_limited events with the client address");
     console.log("\nAll rate-limit scenarios pass.");
-  } finally { proxy.kill(); fs.rmSync(data, { recursive: true, force: true }); }
+  } finally { proxy.kill(); fs.rmSync(data, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 })().catch((e) => { console.error("FAILED:", e); process.exit(1); });

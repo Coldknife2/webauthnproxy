@@ -125,6 +125,6 @@ const raw = (host, urlPath, headers = {}) => new Promise((res, rej) => http.get(
   } finally {
     await browser.close(); proxy.kill(); upstream.close();
     try { execFileSync(RUNTIME, ["kill", "wap-xd-traefik"]); } catch {}
-    fs.rmSync(data, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 })().catch((e) => { console.error("FAILED:", e); process.exit(1); });

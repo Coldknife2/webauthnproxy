@@ -47,6 +47,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("sessions: %v", err)
 	}
+	sessions.maxPerUser = cfg.SessionMaxPerUser
 	sessions.Run()
 	defer sessions.Stop()
 	audit := NewAudit(os.Stdout, cfg.AuditLog)

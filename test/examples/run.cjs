@@ -59,6 +59,12 @@ async function enroll(page, dir, host) {
 const http = require("http");
 const raw = (host, urlPath) => new Promise((res, rej) => http.get({ host: "127.0.0.1", port: 8000, path: urlPath, headers: { Host: host, Accept: "application/json" } },
   (r) => { r.resume(); res(r.statusCode); }).on("error", rej));
+const restart = async (dir) => { // restart the webauthnproxy container (state lives in its volume) and wait until it is healthy again
+  execFileSync("docker", ["restart", `wapex-${dir}-webauthnproxy-1`], { env, stdio: "ignore" });
+  await healthy(dir);
+};
+const rawFull = (host, urlPath, headers = {}) => new Promise((res, rej) => http.get({ host: "127.0.0.1", port: 8000, path: urlPath, headers: { Host: host, ...headers } },
+  (r) => { r.resume(); res({ status: r.statusCode, location: r.headers.location }); }).on("error", rej));
 const retry = async (f) => { for (let i = 0; ; i++) { try { return await f(); } catch (e) { if (i > 20) throw e; await sleep(500); } } };
 
 async function proxyExample(browser) {
@@ -73,6 +79,11 @@ async function proxyExample(browser) {
   const body = await page.textContent("body");
   assert.match(body, /X-Authenticated-User: remi/i); assert.ok(!/wap_session/.test(body), "the session cookie reached the site");
   step("proxy example: signed in, the site receives X-Authenticated-User and not the session cookie");
+
+  // A restart of the container keeps the sessions (they are saved in the data volume)
+  await restart(dir);
+  await retry(async () => { await page.goto("http://app.localhost:8000/"); assert.match(await page.textContent("body"), /X-Authenticated-User: remi/i); });
+  step("proxy example: after a container restart the browser is still signed in (sessions are persisted)");
 
   // the command line administration, inside the running container
   const wap = (...a) => { try { return execFileSync("docker", ["exec", "wapex-proxy-traefik-webauthnproxy-1", "/webauthnproxy", ...a], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); } catch (e) { return "ERR " + e.stderr; } };
@@ -104,6 +115,19 @@ async function forwardExample(browser) {
   assert.equal(new URL(page.url()).host, "two.localhost:8000");
   step("two-domains example: site two opens without a second prompt (single sign-on across domains)");
   assert.equal(await raw("auth.localhost:8000", "/_wap/verify"), 404); step("two-domains example: /_wap/verify is not reachable from the public login host");
+
+  // Restart: sessions survive, a ticket does not (it lives in memory and is single use)
+  const ctx = page.context();
+  const loginCookie = (await ctx.cookies()).find((c) => c.name === "wap_session" && c.domain === "auth.localhost").value;
+  const sso = await rawFull("auth.localhost:8000", "/_wap/sso?next=" + encodeURIComponent("http://one.localhost:8000/p"), { Cookie: `wap_session=${loginCookie}` });
+  const ticket = new URL(sso.location);
+  assert.equal(ticket.host, "one.localhost:8000"); assert.match(ticket.search, /ticket=/);
+  await restart(dir);
+  assert.equal((await retry(() => rawFull("one.localhost:8000", ticket.pathname + ticket.search, { Accept: "text/html" }))).status, 403);
+  step("two-domains example: a ticket issued before a restart is refused afterwards");
+  await retry(async () => { await page.goto("http://one.localhost:8000/"); assert.match(await page.textContent("body"), /site-one/); });
+  assert.equal(new URL(page.url()).host, "one.localhost:8000");
+  step("two-domains example: after the restart the browser is still signed in, with no new passkey prompt");
 }
 
 (async () => {

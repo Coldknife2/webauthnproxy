@@ -32,13 +32,14 @@ type Config struct {
 	PreserveHost  bool          // PRESERVE_HOST: forward the client's Host to the upstream
 	UserHeader    string        // USER_HEADER: header carrying the user name to the upstream
 
-	TrustedProxies  []netip.Prefix // TRUSTED_PROXIES: proxies whose X-Forwarded-* headers are believed (never by default)
-	CookieSecure    string         // COOKIE_SECURE: "auto" (default), "true" or "false"
-	RateLimitIP     RateSpec       // RATE_LIMIT_IP: login/enrollment requests per client address (default 20/1m)
-	RateLimitGlobal RateSpec       // RATE_LIMIT_GLOBAL: login/enrollment requests in total (default 200/1m)
-	SessionBind     Binding        // SESSION_BIND: "ua", "ip" or "ua,ip": tie a session to the browser's User-Agent and/or address (default none)
-	IdleTimeout     time.Duration  // SESSION_IDLE_TIMEOUT: sign out after this long without activity (0 = off)
-	AuditLog        bool           // AUDIT_LOG: JSON audit events on standard output (default on)
+	TrustedProxies    []netip.Prefix // TRUSTED_PROXIES: proxies whose X-Forwarded-* headers are believed (never by default)
+	CookieSecure      string         // COOKIE_SECURE: "auto" (default), "true" or "false"
+	RateLimitIP       RateSpec       // RATE_LIMIT_IP: login/enrollment requests per client address (default 20/1m)
+	RateLimitGlobal   RateSpec       // RATE_LIMIT_GLOBAL: login/enrollment requests in total (default 200/1m)
+	SessionBind       Binding        // SESSION_BIND: "ua", "ip" or "ua,ip": tie a session to the browser's User-Agent and/or address (default none)
+	IdleTimeout       time.Duration  // SESSION_IDLE_TIMEOUT: sign out after this long without activity (0 = off)
+	SessionMaxPerUser int            // SESSION_MAX_PER_USER: sessions kept per user, the least recently used is dropped (default 50, 0 = no limit)
+	AuditLog          bool           // AUDIT_LOG: JSON audit events on standard output (default on)
 }
 
 func splitHost(hp string) (host, port string) {
@@ -200,6 +201,14 @@ func LoadConfig() (*Config, error) {
 	}
 	if c.RateLimitGlobal, err = ParseRate(getenv("RATE_LIMIT_GLOBAL", "200/1m")); err != nil {
 		return nil, fmt.Errorf("RATE_LIMIT_GLOBAL: %w", err)
+	}
+	c.SessionMaxPerUser = defaultMaxPerUser
+	if v := os.Getenv("SESSION_MAX_PER_USER"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid SESSION_MAX_PER_USER %q (a number, 0 = no limit)", v)
+		}
+		c.SessionMaxPerUser = n
 	}
 	c.AuditLog = !strings.EqualFold(getenv("AUDIT_LOG", "true"), "false")
 	return c, nil

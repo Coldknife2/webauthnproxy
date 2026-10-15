@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 )
@@ -16,6 +19,32 @@ type User struct {
 	ID          []byte                `json:"id"`
 	Name        string                `json:"name"`
 	Credentials []webauthn.Credential `json:"credentials"`
+	// Meta describes passkeys by base64url credential id: a label chosen by the user and the creation time.
+	// Passkeys enrolled by an earlier version have no entry (shown without label or date).
+	Meta map[string]CredMeta `json:"meta,omitempty"`
+}
+
+// CredMeta is what a person needs to tell passkeys apart: "phone", "USB key", and when it was added.
+type CredMeta struct {
+	Label   string `json:"label,omitempty"`
+	Created int64  `json:"created,omitempty"` // unix seconds
+}
+
+// maxLabel bounds a passkey label, in runes.
+const maxLabel = 40
+
+// CleanLabel trims a label and keeps it printable and short; it returns an error for control characters.
+func CleanLabel(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return "", errors.New("label contains control characters")
+		}
+	}
+	if r := []rune(s); len(r) > maxLabel {
+		return "", fmt.Errorf("label too long (%d characters at most)", maxLabel)
+	}
+	return s, nil
 }
 
 func (u *User) WebAuthnID() []byte                         { return u.ID }
@@ -64,6 +93,12 @@ func (s *Store) save() error {
 func (s *Store) clone(u *User) *User {
 	c := *u
 	c.Credentials = append([]webauthn.Credential(nil), u.Credentials...)
+	if u.Meta != nil {
+		c.Meta = make(map[string]CredMeta, len(u.Meta))
+		for k, v := range u.Meta {
+			c.Meta[k] = v
+		}
+	}
 	return &c
 }
 
@@ -147,6 +182,15 @@ func (s *Store) CredentialCount() int {
 }
 
 func (s *Store) AddCredential(u *User, c *webauthn.Credential) error {
+	return s.AddCredentialLabeled(u, c, "")
+}
+
+// AddCredentialLabeled stores a passkey with a label and the current time as creation date.
+func (s *Store) AddCredentialLabeled(u *User, c *webauthn.Credential, label string) error {
+	label, err := CleanLabel(label)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var cur *User
@@ -165,6 +209,10 @@ func (s *Store) AddCredential(u *User, c *webauthn.Credential) error {
 		s.Users = append(s.Users, cur)
 	}
 	cur.Credentials = append(cur.Credentials, *c)
+	if cur.Meta == nil {
+		cur.Meta = map[string]CredMeta{}
+	}
+	cur.Meta[b64.EncodeToString(c.ID)] = CredMeta{Label: label, Created: time.Now().Unix()}
 	return s.save()
 }
 
@@ -201,10 +249,38 @@ func (s *Store) DeleteCredential(userID, credID []byte) error {
 			}
 		}
 		u.Credentials = keep
+		delete(u.Meta, b64.EncodeToString(credID))
 		if len(keep) == 0 {
 			s.Users = append(s.Users[:i], s.Users[i+1:]...)
 		}
 		return s.save()
 	}
 	return nil
+}
+
+// SetLabel changes the label of a passkey.
+func (s *Store) SetLabel(userID, credID []byte, label string) error {
+	label, err := CleanLabel(label)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, u := range s.Users {
+		if string(u.ID) != string(userID) {
+			continue
+		}
+		for _, c := range u.Credentials {
+			if string(c.ID) == string(credID) {
+				if u.Meta == nil {
+					u.Meta = map[string]CredMeta{}
+				}
+				m := u.Meta[b64.EncodeToString(credID)]
+				m.Label = label
+				u.Meta[b64.EncodeToString(credID)] = m
+				return s.save()
+			}
+		}
+	}
+	return errors.New("no such passkey")
 }

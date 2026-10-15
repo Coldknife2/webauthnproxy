@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,6 +46,8 @@ type passkeyInfo struct {
 	Transports []string `json:"transports,omitempty"`
 	SignCount  uint32   `json:"signCount"`
 	Synced     bool     `json:"synced"` // backup-eligible: a synced passkey, not bound to one device
+	Label      string   `json:"label,omitempty"`
+	Created    int64    `json:"created,omitempty"` // unix seconds; absent for passkeys enrolled by an older version
 }
 
 func (a *App) adminHandler() http.Handler {
@@ -53,7 +56,8 @@ func (a *App) adminHandler() http.Handler {
 		out := []passkeyInfo{}
 		for _, u := range a.store.List() {
 			for _, c := range u.Credentials {
-				p := passkeyInfo{User: u.Name, ID: credTag(c.ID), SignCount: c.Authenticator.SignCount, Synced: c.Flags.BackupEligible}
+				m := u.Meta[b64s(c.ID)]
+				p := passkeyInfo{User: u.Name, ID: credTag(c.ID), SignCount: c.Authenticator.SignCount, Synced: c.Flags.BackupEligible, Label: m.Label, Created: m.Created}
 				for _, t := range c.Transport {
 					p.Transports = append(p.Transports, string(t))
 				}
@@ -62,27 +66,36 @@ func (a *App) adminHandler() http.Handler {
 		}
 		writeJSON(w, 200, out)
 	})
-	mux.HandleFunc("DELETE /passkeys/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		if len(id) < 6 {
-			jsonErr(w, 400, "give at least 6 characters of the id shown by 'passkeys list'")
+	mux.HandleFunc("PUT /passkeys/{id}/label", func(w http.ResponseWriter, r *http.Request) {
+		user, cred, status, msg := a.findPasskey(r.PathValue("id"))
+		if status != 0 {
+			jsonErr(w, status, msg)
 			return
 		}
-		var user *User
-		var cred []byte
-		n := 0
-		for _, u := range a.store.List() {
-			for _, c := range u.Credentials {
-				if strings.HasPrefix(credTag(c.ID), id) {
-					user, cred, n = u, c.ID, n+1
-				}
-			}
+		var in struct{ Label string }
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in)
+		if err := a.store.SetLabel(user.ID, cred, in.Label); err != nil {
+			jsonErr(w, 400, err.Error())
+			return
 		}
+		a.audit.Event("passkey_labeled", "user", user.Name, "credential", credTag(cred), "via", "cli")
+		writeJSON(w, 200, map[string]string{"ok": "true", "user": user.Name})
+	})
+	mux.HandleFunc("POST /invites", func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ User, Label string }
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in)
+		link, exp, err := a.createInvite(in.User, in.Label)
+		if err != nil {
+			jsonErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"url": link, "expires": exp.Unix()})
+	})
+	mux.HandleFunc("DELETE /passkeys/{id}", func(w http.ResponseWriter, r *http.Request) {
+		user, cred, status, msg := a.findPasskey(r.PathValue("id"))
 		switch {
-		case n == 0:
-			jsonErr(w, 404, "no passkey with that id")
-		case n > 1:
-			jsonErr(w, 409, "several passkeys match, give more characters")
+		case status != 0:
+			jsonErr(w, status, msg)
 		case a.store.CredentialCount() <= 1:
 			jsonErr(w, 409, "cannot delete the last passkey (this would lock you out); see docs/enrollment.md to recover")
 		default:
@@ -130,6 +143,28 @@ func (a *App) adminHandler() http.Handler {
 	return mux
 }
 
+// findPasskey resolves a (prefix of a) short passkey id; status is 0 on success, otherwise an HTTP status and message.
+func (a *App) findPasskey(id string) (user *User, cred []byte, status int, msg string) {
+	if len(id) < 6 {
+		return nil, nil, 400, "give at least 6 characters of the id shown by 'passkeys list'"
+	}
+	n := 0
+	for _, u := range a.store.List() {
+		for _, c := range u.Credentials {
+			if strings.HasPrefix(credTag(c.ID), id) {
+				user, cred, n = u, c.ID, n+1
+			}
+		}
+	}
+	switch {
+	case n == 0:
+		return nil, nil, 404, "no passkey with that id"
+	case n > 1:
+		return nil, nil, 409, "several passkeys match, give more characters"
+	}
+	return user, cred, 0, ""
+}
+
 // listenAdmin opens DATA_DIR/admin.sock (mode 0600) and serves the admin handler on it.
 func listenAdmin(dir string, h http.Handler) (*http.Server, error) {
 	path := filepath.Join(dir, adminSocket)
@@ -160,7 +195,11 @@ func adminClient(dir string) *http.Client {
 }
 
 func adminCall(dir, method, path string) ([]byte, error) {
-	req, _ := http.NewRequest(method, "http://admin"+path, nil)
+	return adminCallBody(dir, method, path, nil)
+}
+
+func adminCallBody(dir, method, path string, body []byte) ([]byte, error) {
+	req, _ := http.NewRequest(method, "http://admin"+path, bytes.NewReader(body))
 	resp, err := adminClient(dir).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach the running service (is it started, and is DATA_DIR=%s the same folder?): %w", dir, err)
@@ -202,8 +241,40 @@ func runCLI(args []string, dir string, out io.Writer) (handled bool, err error) 
 				if p.Synced {
 					kind = "synced"
 				}
-				fmt.Fprintf(out, "%-12s  user=%s  %s  transports=%s  uses=%d\n", p.ID, p.User, kind, strings.Join(p.Transports, ","), p.SignCount)
+				label, added := p.Label, "-"
+				if label == "" {
+					label = "-"
+				}
+				if p.Created > 0 {
+					added = time.Unix(p.Created, 0).UTC().Format("2006-01-02")
+				}
+				fmt.Fprintf(out, "%-12s  user=%s  label=%s  added=%s  %s  transports=%s  uses=%d\n", p.ID, p.User, label, added, kind, strings.Join(p.Transports, ","), p.SignCount)
 			}
+			return true, nil
+		}
+		if len(args) >= 4 && args[1] == "label" {
+			body, _ := json.Marshal(map[string]string{"Label": strings.Join(args[3:], " ")})
+			if _, err := adminCallBody(dir, "PUT", "/passkeys/"+url.PathEscape(args[2])+"/label", body); err != nil {
+				return true, err
+			}
+			fmt.Fprintln(out, "label set")
+			return true, nil
+		}
+		if len(args) >= 3 && args[1] == "add" {
+			body, _ := json.Marshal(map[string]string{"User": args[2], "Label": strings.Join(args[3:], " ")})
+			b, err := adminCallBody(dir, "POST", "/invites", body)
+			if err != nil {
+				return true, err
+			}
+			var r struct {
+				URL     string `json:"url"`
+				Expires int64  `json:"expires"`
+			}
+			if err := json.Unmarshal(b, &r); err != nil {
+				return true, err
+			}
+			fmt.Fprintf(out, "Open this link on the device that will hold the new passkey for %s (single use, valid until %s):\n\n  %s\n",
+				args[2], time.Unix(r.Expires, 0).UTC().Format("15:04 UTC"), r.URL)
 			return true, nil
 		}
 		if len(args) == 3 && args[1] == "revoke" {
@@ -262,7 +333,7 @@ func runCLI(args []string, dir string, out io.Writer) (handled bool, err error) 
 	default:
 		return false, nil
 	}
-	return true, errors.New("usage: webauthnproxy passkeys list | passkeys revoke <id> | sessions list | sessions revoke <id> | signout <user> | healthcheck")
+	return true, errors.New("usage: webauthnproxy passkeys list | passkeys revoke <id> | passkeys label <id> <text> | passkeys add <user> [label] | sessions list | sessions revoke <id> | signout <user> | healthcheck")
 }
 
 // healthcheck asks the local service whether it is up; it is what the container HEALTHCHECK runs

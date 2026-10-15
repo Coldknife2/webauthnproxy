@@ -32,10 +32,11 @@ var b64 = base64.RawURLEncoding
 // is exact within the process, and a ticket never survives a restart.
 
 const (
-	ticketTTL   = 60 * time.Second
-	maxSessions = 20000
-	maxTickets  = 10000
-	flushEvery  = 30 * time.Second
+	ticketTTL         = 60 * time.Second
+	maxSessions       = 20000
+	maxTickets        = 10000
+	defaultMaxPerUser = 50
+	flushEvery        = 30 * time.Second
 )
 
 type hash32 = [sha256.Size]byte
@@ -86,22 +87,23 @@ type ticket struct {
 type Binding struct{ UA, IP bool }
 
 type Sessions struct {
-	mu        sync.RWMutex
-	m         map[hash32]*sess
-	tickets   map[hash32]ticket
-	ttl       time.Duration
-	idle      time.Duration // 0 = no idle timeout
-	bind      Binding
-	now       func() time.Time
-	path      string // "" = memory only (tests)
-	dirty     atomic.Bool
-	stopFlush chan struct{}
+	mu         sync.RWMutex
+	m          map[hash32]*sess
+	tickets    map[hash32]ticket
+	ttl        time.Duration
+	idle       time.Duration // 0 = no idle timeout
+	bind       Binding
+	maxPerUser int // sessions kept per user (0 = no limit); the least recently used goes first
+	now        func() time.Time
+	path       string // "" = memory only (tests)
+	dirty      atomic.Bool
+	stopFlush  chan struct{}
 }
 
 // NewSessions returns an empty session table. With a data directory the table is loaded from, and saved to,
 // DATA_DIR/sessions.json.
 func NewSessions(dir string, ttl, idle time.Duration, bind Binding) (*Sessions, error) {
-	s := &Sessions{m: map[hash32]*sess{}, tickets: map[hash32]ticket{}, ttl: ttl, idle: idle, bind: bind, now: time.Now}
+	s := &Sessions{m: map[hash32]*sess{}, tickets: map[hash32]ticket{}, ttl: ttl, idle: idle, bind: bind, now: time.Now, maxPerUser: defaultMaxPerUser}
 	if dir == "" {
 		return s, nil
 	}
@@ -250,6 +252,24 @@ func (s *Sessions) Create(user, aud, parent, ua, ip string) (token string) {
 		x.ipHash = bindHash(ip)
 	}
 	s.mu.Lock()
+	if s.maxPerUser > 0 { // a user cannot fill the table by signing in over and over: drop their least recently used
+		for {
+			count, victim, vseen := 0, hash32{}, int64(0)
+			for h, v := range s.m {
+				if v.user != user {
+					continue
+				}
+				if count == 0 || v.seen.Load() < vseen {
+					victim, vseen = h, v.seen.Load()
+				}
+				count++
+			}
+			if count < s.maxPerUser {
+				break
+			}
+			delete(s.m, victim)
+		}
+	}
 	if len(s.m) >= maxSessions { // memory bound: drop the sessions closest to expiry
 		var oldest hash32
 		var oe time.Time
@@ -496,4 +516,39 @@ func (c *Ceremonies[T]) Take(id string) (T, bool) {
 		return zero, false
 	}
 	return x.v, true
+}
+
+// ListUser returns the live sessions of one user, newest first.
+func (s *Sessions) ListUser(user string) []Session {
+	var out []Session
+	for _, se := range s.List() {
+		if se.User == user {
+			out = append(out, se)
+		}
+	}
+	return out
+}
+
+// RevokeOwn ends the session with exactly this short id if it belongs to user. It reports whether one was removed;
+// a session of another user looks the same as a missing one.
+func (s *Sessions) RevokeOwn(id, user string) bool {
+	for _, se := range s.ListUser(user) {
+		if se.ID == id {
+			return s.removeWhere(func(h hash32, _ *sess) bool { return h == se.hash }) > 0
+		}
+	}
+	return false
+}
+
+// RevokeOthers ends every session of the user except this browser's (the login session and the sites opened from it).
+func (s *Sessions) RevokeOthers(se Session) int {
+	root := se.Handle()
+	s.mu.RLock()
+	if x := s.m[se.hash]; x != nil && x.parent != "" {
+		root = x.parent
+	}
+	s.mu.RUnlock()
+	return s.removeWhere(func(h hash32, x *sess) bool {
+		return x.user == se.User && b64.EncodeToString(h[:]) != root && x.parent != root && h != se.hash
+	})
 }

@@ -3,7 +3,7 @@
 //   cd test/e2e && npm install && npx playwright install chromium && npm test
 // Variables: BIN (binary, default ../../webauthnproxy), CHROMIUM (path of an existing Chromium).
 const { chromium } = require("playwright");
-const { spawn } = require("child_process");
+const { spawn, execFileSync } = require("child_process");
 const http = require("http");
 const fs = require("fs");
 const os = require("os");
@@ -107,6 +107,35 @@ async function newPage(browser) {
       return (await fetch(`/api/credentials?user=${u.id}&id=${u.credentials[0].id}`, { method: "DELETE", headers: { "X-Requested-With": "wap" } })).status;
     });
     assert.equal(last, 409); step("the last passkey cannot be deleted");
+
+    // 6. A label tells passkeys apart (name + label in the enrollment page; shown in the list)
+    await alice.goto("http://localhost:8081/"); await alice.waitForSelector("#list li");
+    await alice.fill("#name", "carol"); await alice.fill("#label", "laptop"); await alice.click("#f button");
+    await alice.waitForSelector("#msg.ok"); await alice.reload(); await alice.waitForSelector("#list li >> nth=1");
+    assert.match(await alice.textContent("#list"), /carol — laptop \(/); step("passkey labels: the enrollment list shows the label and the date");
+
+    // 7. A one-time link adds a passkey from another device, without the enrollment port
+    const wap = (...a) => execFileSync(BIN, a, { env: { ...process.env, DATA_DIR: data }, encoding: "utf8" });
+    const link = /(http:\/\/localhost:8080\/_wap\/add#\S+)/.exec(wap("passkeys", "add", "alice", "phone"))[1];
+    const phone = await newPage(browser);
+    await phone.goto("http://localhost:8080/_wap/add#bogus"); await phone.click("#go");
+    await phone.waitForSelector("#msg.err"); step("invitation: a wrong code is refused");
+    await phone.goto("about:blank"); await phone.goto(link); await phone.click("#go"); await phone.waitForSelector("#msg.ok", { timeout: 8000 }).catch(async (e) => { console.log("MSG:", await phone.textContent("#msg"), link, log.join("").split("\n").filter((l) => /invite|enroll_failure/.test(l)).join("\n")); throw e; });
+    step("invitation: the second device adds its passkey with the one-time link");
+    await phone.goto("about:blank"); await phone.goto(link); await phone.click("#go"); await phone.waitForSelector("#msg.err");
+    step("invitation: the same link cannot be used twice");
+    assert.match(wap("passkeys", "list"), /user=alice\s+label=phone/); step("invitation: the new passkey is listed with its label");
+    await phone.goto("http://localhost:8080/"); await phone.click("#go"); await phone.waitForURL("http://localhost:8080/");
+    assert.match(await phone.textContent("body"), /SECRET user=alice/); step("invitation: the new device signs in with its passkey");
+
+    // 8. "My sessions": the user sees their sessions and ends the others
+    await phone.goto("http://localhost:8080/_wap/sessions"); await phone.waitForSelector("#list li >> nth=1");
+    assert.match(await phone.textContent("#list"), /this one/); step("sessions page: lists my sessions and marks this one");
+    phone.once("dialog", (d) => d.accept());
+    await phone.click("#others");
+    await until(async () => (await phone.locator("#list li").count()) === 1); step("sessions page: 'end all other sessions' keeps only this one");
+    await alice.goto("http://localhost:8080/secret", { waitUntil: "domcontentloaded" });
+    assert.match(alice.url(), /_wap\/login/); step("sessions page: the other device's session really ended");
     // The audit log (JSON on standard output) recorded the security events, and no secret
     const out = log.join("");
     for (const ev of ["enroll_success", "enroll_failure", "login_success", "login_failure"]) assert.ok(out.includes(`"event":"${ev}"`), "audit event missing: " + ev);

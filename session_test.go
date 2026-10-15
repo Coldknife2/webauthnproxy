@@ -303,3 +303,101 @@ func TestSignInAgainReplacesTheOldLoginAndKeepsItsSites(t *testing.T) {
 		t.Fatal("the site session escaped the sign-out of this browser")
 	}
 }
+
+func TestPerUserSessionCapDropsTheLeastRecentlyUsed(t *testing.T) {
+	s := mustSessions(t, "", time.Hour, 0, Binding{})
+	s.maxPerUser = 3
+	c := &clock{time.Unix(2_000_000_000, 0)}
+	s.now = c.now
+	var toks []string
+	for i := 0; i < 3; i++ {
+		toks = append(toks, s.Create("remi", "", "", "", ""))
+		c.t = c.t.Add(time.Second)
+	}
+	other := s.Create("ana", "", "", "", "")
+	s.Lookup(toks[0], "", "") // the oldest session was used just now: the second one is now the least recently used
+	c.t = c.t.Add(time.Second)
+	fourth := s.Create("remi", "", "", "", "")
+	if _, ok := s.Lookup(toks[1], "", ""); ok {
+		t.Error("the least recently used session was kept")
+	}
+	for name, tok := range map[string]string{"used one": toks[0], "third": toks[2], "new": fourth, "another user's": other} {
+		if _, ok := s.Lookup(tok, "", ""); !ok {
+			t.Errorf("%s session was dropped", name)
+		}
+	}
+	if n := len(s.ListUser("remi")); n != 3 {
+		t.Fatalf("remi has %d sessions, want the cap of 3", n)
+	}
+	// a flood of sign-ins keeps the cap and never touches another user
+	for i := 0; i < 100; i++ {
+		c.t = c.t.Add(time.Second)
+		s.Create("remi", "", "", "", "")
+	}
+	if n := len(s.ListUser("remi")); n != 3 || len(s.ListUser("ana")) != 1 {
+		t.Fatalf("after a flood: remi %d, ana %d", n, len(s.ListUser("ana")))
+	}
+	s.maxPerUser = 0 // no limit
+	for i := 0; i < 10; i++ {
+		s.Create("remi", "", "", "", "")
+	}
+	if n := len(s.ListUser("remi")); n != 13 {
+		t.Fatalf("with the cap off remi has %d sessions, want 13", n)
+	}
+}
+
+func TestSessionMaxPerUserConfig(t *testing.T) {
+	t.Setenv("UPSTREAM", "http://localhost:3000")
+	t.Setenv("RP_ID", "localhost")
+	t.Setenv("RP_ORIGINS", "http://localhost:8080")
+	if c, err := LoadConfig(); err != nil || c.SessionMaxPerUser != defaultMaxPerUser {
+		t.Fatalf("default: %v %+v", err, c)
+	}
+	t.Setenv("SESSION_MAX_PER_USER", "7")
+	if c, err := LoadConfig(); err != nil || c.SessionMaxPerUser != 7 {
+		t.Fatalf("7: %v", err)
+	}
+	for _, bad := range []string{"-1", "many", "1.5"} {
+		t.Setenv("SESSION_MAX_PER_USER", bad)
+		if _, err := LoadConfig(); err == nil {
+			t.Errorf("SESSION_MAX_PER_USER=%s accepted", bad)
+		}
+	}
+}
+
+func TestRevokeOthersKeepsThisBrowser(t *testing.T) {
+	s := mustSessions(t, "", time.Hour, 0, Binding{})
+	login := s.Create("remi", "", "", "", "")
+	lse, _ := s.Lookup(login, "", "")
+	site := s.Create("remi", "a.example", lse.Handle(), "", "")
+	otherLogin := s.Create("remi", "", "", "", "")
+	stranger := s.Create("ana", "", "", "", "")
+	if n := s.RevokeOthers(lse); n != 1 {
+		t.Errorf("RevokeOthers removed %d, want 1", n)
+	}
+	for name, tok := range map[string]string{"this login": login, "its site": site, "another user": stranger} {
+		if _, ok := s.Lookup(tok, "", ""); !ok {
+			t.Errorf("%s was ended", name)
+		}
+	}
+	if _, ok := s.Lookup(otherLogin, "", ""); ok {
+		t.Error("another session of the user survived")
+	}
+}
+
+func TestRevokeOwnRefusesOtherUsers(t *testing.T) {
+	s := mustSessions(t, "", time.Hour, 0, Binding{})
+	mine := s.Create("remi", "", "", "", "")
+	theirs := s.Create("ana", "", "", "", "")
+	tse, _ := s.Lookup(theirs, "", "")
+	if s.RevokeOwn(tse.ID, "remi") {
+		t.Fatal("a user revoked somebody else's session")
+	}
+	if _, ok := s.Lookup(theirs, "", ""); !ok {
+		t.Fatal("the other session was ended")
+	}
+	mse, _ := s.Lookup(mine, "", "")
+	if !s.RevokeOwn(mse.ID, "remi") {
+		t.Fatal("own session not revoked")
+	}
+}

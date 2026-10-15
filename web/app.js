@@ -29,14 +29,16 @@ function credToJSON(c) {
   return out;
 }
 
-async function registerPasskey(apiBase, name) {
-  const { cid, options } = await api(apiBase + "/register/begin", "POST", { name });
+// paths overrides the begin/finish URLs (the invitation page uses its own).
+async function registerPasskey(apiBase, name, label, paths) {
+  const p = paths || { begin: apiBase + "/register/begin", finish: apiBase + "/register/finish" };
+  const { cid, options } = await api(p.begin, "POST", { name, label });
   const pk = options.publicKey;
   pk.challenge = dec(pk.challenge);
   pk.user.id = dec(pk.user.id);
   (pk.excludeCredentials || []).forEach((c) => (c.id = dec(c.id)));
   const cred = await navigator.credentials.create({ publicKey: pk });
-  await api(apiBase + "/register/finish?cid=" + encodeURIComponent(cid), "POST", credToJSON(cred));
+  await api(p.finish + "?cid=" + encodeURIComponent(cid), "POST", credToJSON(cred));
 }
 
 async function loginWithPasskey(next) {

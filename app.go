@@ -27,6 +27,7 @@ const prefix = "/_wap"
 type enrollState struct {
 	Session webauthn.SessionData
 	User    *User
+	Label   string
 }
 
 type App struct {
@@ -40,6 +41,9 @@ type App struct {
 	audit       *Audit   // nil = audit log disabled
 	ipLimit     *Limiter // login and enrollment requests per client address
 	globalLimit *Limiter // login and enrollment requests in total
+
+	invOnce sync.Once
+	invites *Invites // one-time invitations to add a passkey (created through the admin socket)
 
 	bootMu sync.Mutex
 	boot   string // enrollment bootstrap token (empty database)
@@ -98,6 +102,8 @@ func (a *App) publicHandler() http.Handler {
 	mux.Handle("POST "+prefix+"/login/begin", a.limited(a.loginBegin))
 	mux.Handle("POST "+prefix+"/login/finish", a.limited(a.loginFinish))
 	mux.HandleFunc("POST "+prefix+"/logout", a.logout)
+	a.sessionsAPI(mux)
+	a.inviteAPI(mux)
 	mux.HandleFunc("GET "+prefix+"/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write([]byte("ok\n"))
@@ -241,13 +247,13 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, prefix+"/login", http.StatusFound)
 		return
 	}
-	signedIn, signOut, signOutAll := "Signed in as", "Sign out", "Sign out of all devices"
+	signedIn, signOut, signOutAll, mine := "Signed in as", "Sign out", "Sign out of all devices", "My sessions"
 	if r.URL.Query().Get("lang") == "fr" {
-		signedIn, signOut, signOutAll = "Connecté en tant que", "Se déconnecter", "Se déconnecter de tous les appareils"
+		signedIn, signOut, signOutAll, mine = "Connecté en tant que", "Se déconnecter", "Se déconnecter de tous les appareils", "Mes sessions"
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Session</title><body style="font-family:system-ui;text-align:center;margin-top:20vh"><p>%s <b>%s</b></p><form method=post action="%s/logout"><button>%s</button></form><form method=post action="%s/logout?all=1"><button>%s</button></form>`,
-		signedIn, html.EscapeString(name), prefix, signOut, prefix, signOutAll)
+	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Session</title><body style="font-family:system-ui;text-align:center;margin-top:20vh"><p>%s <b>%s</b></p><form method=post action="%s/logout"><button>%s</button></form><form method=post action="%s/logout?all=1"><button>%s</button></form><p><a href="%s/sessions">%s</a></p>`,
+		signedIn, html.EscapeString(name), prefix, signOut, prefix, signOutAll, prefix, mine)
 }
 
 // safeNext only allows local paths and, in forward mode, absolute URLs of allowed hosts.
@@ -553,7 +559,9 @@ func credTag(id []byte) string {
 
 func (a *App) apiUsers(w http.ResponseWriter, r *http.Request) {
 	type cred struct {
-		ID string `json:"id"`
+		ID      string `json:"id"`
+		Label   string `json:"label,omitempty"`
+		Created int64  `json:"created,omitempty"`
 	}
 	type user struct {
 		ID    string `json:"id"`
@@ -564,7 +572,8 @@ func (a *App) apiUsers(w http.ResponseWriter, r *http.Request) {
 	for _, u := range a.store.List() {
 		x := user{ID: b64s(u.ID), Name: u.Name, Creds: []cred{}}
 		for _, c := range u.Credentials {
-			x.Creds = append(x.Creds, cred{ID: b64s(c.ID)})
+			m := u.Meta[b64s(c.ID)]
+			x.Creds = append(x.Creds, cred{ID: b64s(c.ID), Label: m.Label, Created: m.Created})
 		}
 		out = append(out, x)
 	}
@@ -573,12 +582,18 @@ func (a *App) apiUsers(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) registerBegin(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name string `json:"name"`
+		Name  string `json:"name"`
+		Label string `json:"label"`
 	}
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in)
 	name := strings.TrimSpace(in.Name)
 	if name == "" || len(name) > 64 {
 		jsonErr(w, 400, "invalid name (1 to 64 characters)")
+		return
+	}
+	label, err := CleanLabel(in.Label)
+	if err != nil {
+		jsonErr(w, 400, err.Error())
 		return
 	}
 	user := a.store.GetOrNew(name)
@@ -587,7 +602,7 @@ func (a *App) registerBegin(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"cid": a.enroll.Put(enrollState{*sd, user}), "options": opts})
+	writeJSON(w, 200, map[string]any{"cid": a.enroll.Put(enrollState{*sd, user, label}), "options": opts})
 }
 
 func (a *App) registerFinish(w http.ResponseWriter, r *http.Request) {
@@ -602,7 +617,7 @@ func (a *App) registerFinish(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, 400, "enrollment refused: "+err.Error())
 		return
 	}
-	if err := a.store.AddCredential(st.User, cred); err != nil {
+	if err := a.store.AddCredentialLabeled(st.User, cred, st.Label); err != nil {
 		if errors.Is(err, ErrDuplicate) {
 			a.auditReq(r, "enroll_failure", "user", st.User.Name, "reason", "duplicate credential")
 			jsonErr(w, 409, err.Error())

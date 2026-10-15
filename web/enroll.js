@@ -13,7 +13,7 @@ async function refresh() {
   if (!users.length) ul.textContent = t("none");
   for (const u of users) for (const [i, c] of u.credentials.entries()) {
     const li = document.createElement("li");
-    li.append(u.name + " — " + t("passkeyN") + (i + 1) + " ");
+    li.append(u.name + " — " + (c.label || t("passkeyN") + (i + 1)) + (c.created ? " (" + new Date(c.created * 1000).toLocaleDateString(LANG) + ") " : " "));
     const b = document.createElement("button"); b.className = "del"; b.textContent = t("del");
     b.onclick = async () => {
       if (!confirm(t("confirmDelete"))) return;
@@ -28,7 +28,7 @@ $("f").onsubmit = async (e) => {
   e.preventDefault(); say(t("follow"));
   extraHeaders = $("token").value ? { "X-Bootstrap-Token": $("token").value } : {};
   try {
-    await registerPasskey("/api", $("name").value);
+    await registerPasskey("/api", $("name").value, $("label").value);
     say(t("saved"), "ok");
     // After the first passkey the page requires a login: reload.
     setTimeout(() => location.reload(), 800);

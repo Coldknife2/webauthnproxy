@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en" data-i18n-title="addTitle"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Add a passkey</title>
+<style>
+ body{font-family:system-ui,sans-serif;max-width:44rem;margin:2rem auto;padding:0 1rem;color:#111}
+ input,button{font-size:1rem;padding:.5rem .8rem;border-radius:6px;border:1px solid #bbb}
+ button{background:#2563eb;color:#fff;border:0;cursor:pointer}
+ button.del{background:#b91c1c;padding:.2rem .6rem;font-size:.85rem}
+ li{margin:.6rem 0} small{color:#555} #msg{min-height:1.4em;margin-top:.8rem} .err{color:#b91c1c} .ok{color:#15803d}
+ form{display:flex;flex-wrap:wrap;gap:.5rem} [hidden]{display:none!important}
+</style></head>
+<body>
+ <h1 data-i18n="addTitle">Add a passkey</h1>
+ <p><span data-i18n="addIntro">This one-time link adds a passkey for</span> <b id="who"></b>.</p>
+ <form id="f">
+   <input id="label" data-i18n-ph="addLabelPh" placeholder="Label (e.g. phone)" maxlength="40">
+   <button id="go" data-i18n="addPasskey">Add a passkey</button>
+ </form>
+ <div id="msg"></div>
+<script src="/_wap/app.js"></script>
+<script src="/_wap/i18n.js"></script>
+<script src="/_wap/add.js"></script>
+</body></html>

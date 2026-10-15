@@ -78,7 +78,7 @@ const until = async (f, ms = 15000) => { const t = Date.now(); while (Date.now()
     step("idle timeout: no activity for longer than the timeout, the session is gone");
     console.log("\nAll forwardAuth scenarios pass.");
   } finally {
-    await browser.close(); proxy.kill(); upstream.close();
+    await browser.close(); proxy.kill(); await new Promise((r) => (proxy.exitCode !== null || proxy.signalCode ? r() : proxy.once("exit", r))); upstream.close();
     try { execFileSync(RUNTIME, ["kill", "wap-e2e-traefik"]); } catch {}
     fs.rmSync(data, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }

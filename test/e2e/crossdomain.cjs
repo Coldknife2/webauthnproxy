@@ -123,8 +123,8 @@ const raw = (host, urlPath, headers = {}) => new Promise((res, rej) => http.get(
     step("site logout clears that site's cookie");
     console.log("\nAll cross-domain scenarios pass.");
   } finally {
-    await browser.close(); proxy.kill(); upstream.close();
+    await browser.close(); proxy.kill(); await new Promise((r) => (proxy.exitCode !== null || proxy.signalCode ? r() : proxy.once("exit", r))); upstream.close();
     try { execFileSync(RUNTIME, ["kill", "wap-xd-traefik"]); } catch {}
-    fs.rmSync(data, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 })().catch((e) => { console.error("FAILED:", e); process.exit(1); });

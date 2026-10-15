@@ -1,5 +1,5 @@
 # Build on the builder's own architecture and cross-compile: no emulation needed for multi-arch images.
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev

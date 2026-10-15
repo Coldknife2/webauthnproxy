@@ -20,6 +20,8 @@
  <input id="rp" placeholder="example.com" autocomplete="off">
  <label for="name" data-i18n="user">User name</label>
  <input id="name" maxlength="64" placeholder="remi" autocomplete="off">
+ <label for="label" data-i18n="label">Label (optional)</label>
+ <input id="label" maxlength="40" placeholder="phone" autocomplete="off">
  <button id="go" data-i18n="create">Create the passkey</button>
  <div id="err"></div>
  <div id="res" hidden>
@@ -39,7 +41,7 @@ const I18N = {
   fr: {
     title: "webauthnproxy — outil d'enrôlement", h1: "Outil d'enrôlement de passkey",
     intro: "Cette page ne contacte aucun serveur. Elle crée une passkey dans votre navigateur et produit un fichier JSON (clé publique uniquement). La passkey ne donne aucun accès tant que ce fichier n'a pas été copié par un administrateur dans le dossier <code>import/</code> du proxy.",
-    rp: "Domaine (RP ID)", user: "Nom d'utilisateur", create: "Créer la passkey", file: "Fichier à importer",
+    rp: "Domaine (RP ID)", user: "Nom d'utilisateur", label: "Libellé (facultatif)", create: "Créer la passkey", file: "Fichier à importer",
     download: "Télécharger", copy: "Copier",
     where: "Placez le fichier dans <code>&lt;DATA_DIR&gt;/import/</code> (ex. <code>cp remi.json data/import/</code>). Le proxy l'importe en quelques secondes.",
     required: "Domaine et nom d'utilisateur requis (sans espaces autour, 64 caractères max).",
@@ -83,6 +85,7 @@ $("go").onclick = async () => {
     const r = cred.response;
     const out = {
       version: 1, rpId,
+      ...($("label").value.trim() ? { label: $("label").value.trim().slice(0, 40) } : {}),
       user: { id: enc(id), name },
       credential: {
         id: enc(cred.rawId),

@@ -47,12 +47,13 @@ public key, consistent credential ID, user ID consistent with the name, no dupli
 {
   "version": 1,
   "rpId": "example.com",
+  "label": "phone",
   "user": { "id": "<base64url>", "name": "remi" },
   "credential": { "id": "<base64url>", "authenticatorData": "<base64url>", "transports": ["internal"] }
 }
 ```
 
-The `import/` folder is watched continuously: **only someone who can write to the data volume can add a passkey this way**.
+`label` is optional (the tool has a field for it; at most 40 printable characters, otherwise the file is rejected). The `import/` folder is watched continuously: **only someone who can write to the data volume can add a passkey this way**.
 To add a second device to a user, run the tool again with the **same name**.
 
 ## Listing and revoking passkeys
@@ -61,19 +62,32 @@ Without editing `users.json` and without opening port 8081, from the host that r
 
 ```sh
 docker exec webauthnproxy /webauthnproxy passkeys list
+docker exec webauthnproxy /webauthnproxy passkeys label <id> phone  # name a passkey (40 characters at most) so you can tell them apart
+docker exec webauthnproxy /webauthnproxy passkeys add <user> [label] # a one-time link to add a passkey from another device (see below)
 docker exec webauthnproxy /webauthnproxy passkeys revoke <id>     # <id>: the tag shown by "list" (a prefix of 6+ characters is enough)
 docker exec webauthnproxy /webauthnproxy signout <user>           # end every session of a user, keep the passkeys
 docker exec webauthnproxy /webauthnproxy sessions list            # who is signed in: id, user, site, last activity, browser
 docker exec webauthnproxy /webauthnproxy sessions revoke <id>     # end one session (a lost laptop, a forgotten tab)
 ```
 
-(`podman exec` works the same.) `list` prints one line per passkey: short id, user, `synced` or `device-bound`, transports, number of uses.
+(`podman exec` works the same.) `list` prints one line per passkey: short id, user, label, date added, `synced` or `device-bound`, transports, number of uses. Passkeys enrolled before labels existed show `label=-` and no date.
 `revoke` deletes the passkey **and ends every session of its user** (they sign in again with another passkey). It refuses to delete the **last** passkey of the service, an unknown or ambiguous id, and ids shorter than 6 characters.
 Each action is written to the audit log with `"via":"cli"`.
 
 How it works: the running service listens on a Unix socket, `DATA_DIR/admin.sock`, created with mode `0600`, and the command talks to it. Nothing is added to the network;
 whoever can open that socket can already write to the data volume, which is the trust level this project assumes for recovery and import.
 The command needs the service to be running with the same `DATA_DIR`. The enrolment page (port 8081) can also list and delete passkeys.
+
+### Add a passkey from another device: a one-time link
+
+`passkeys add <user> [label]` prints a link such as `https://auth.example.com/_wap/add#<code>`, valid **15 minutes** and **once**. Open it on the device that will hold the new passkey and press *Add a passkey*.
+It needs neither the enrolment port nor a session on that device, and it works for a user who does not exist yet (the administrator who runs the command decides who gets a passkey).
+
+- The code is in the URL **fragment** (after `#`): browsers never send it to a server, so it is absent from access logs and `Referer` headers. The page sends it in a header.
+- The link is on the public port, so it is rate limited like the login, needs the anti-CSRF header, and is refused when unknown, expired, used, or when the ceremony does not belong to the invitation's user. The body of a request cannot choose the user.
+- Only a hash of the code is kept, in memory: a restart cancels pending invitations, and at most 20 can be pending. The code is not written to the audit log (`invite_created` and `enroll_success` with `"via":"invite"` are).
+- The link points at the login host in forward mode, otherwise at the first `RP_ORIGINS` entry; that origin must be reachable by the new device over HTTPS.
+- **Treat the link like a password** until it is used: whoever opens it first adds their passkey to that user.
 
 ## Account recovery (lost passkeys)
 
@@ -94,4 +108,4 @@ Alternative without opening port 8081: create a passkey with the static tool on 
 
 **Same caution when restoring a backup:** an old `sessions.json` brings back sessions revoked after the backup was taken. Delete `sessions.json` after a restore.
 
-*What is tested:* listing, revoking (prefix, ambiguity, last passkey, unknown id), sign-out, the socket mode and the absence of these routes on the network ports are covered by `admin_test.go`.  the empty-database bootstrap (first passkey with the token) and the import path are covered by the unit and e2e tests. The file-deletion procedure above reaches the same empty state but is not exercised as a scenario of its own, and the restore caveat is documented, not tested.
+*What is tested:* labels (cleaning, persistence, copies, deletion, import, admin command), invitations (refusals, expiry, single use, rate limit, finish refusals, end to end with a second virtual authenticator), listing, revoking (prefix, ambiguity, last passkey, unknown id), sign-out, the socket mode and the absence of these routes on the network ports are covered by `admin_test.go`.  the empty-database bootstrap (first passkey with the token) and the import path are covered by the unit and e2e tests. The file-deletion procedure above reaches the same empty state but is not exercised as a scenario of its own, and the restore caveat is documented, not tested.

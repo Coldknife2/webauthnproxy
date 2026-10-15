@@ -25,6 +25,7 @@ const (
 type importFile struct {
 	Version int    `json:"version"`
 	RPID    string `json:"rpId"`
+	Label   string `json:"label,omitempty"` // optional: "phone", "USB key"
 	User    struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
@@ -46,6 +47,9 @@ func parseImport(raw []byte, rpID string, requireUV bool) (*User, *webauthn.Cred
 	}
 	if f.Version != importVersion {
 		return nil, nil, fmt.Errorf("unsupported version %d", f.Version)
+	}
+	if _, err := CleanLabel(f.Label); err != nil {
+		return nil, nil, err
 	}
 	name := strings.TrimSpace(f.User.Name)
 	if name == "" || len(name) > 64 || name != f.User.Name {
@@ -139,7 +143,11 @@ func importOne(store *Store, path, rpID string, requireUV bool) (user string, cr
 	if err != nil {
 		return "", nil, err
 	}
-	return u.Name, cred.ID, store.AddCredential(store.GetOrNew(u.Name), cred)
+	var l struct {
+		Label string `json:"label"`
+	}
+	_ = json.Unmarshal(raw, &l) // already validated by parseImport
+	return u.Name, cred.ID, store.AddCredentialLabeled(store.GetOrNew(u.Name), cred, l.Label)
 }
 
 // watchImports polls the import folder (at startup, then every 5 s).

@@ -20,6 +20,7 @@ Everything is set through environment variables.
 | `TOOL_ENABLED` | `false` | Enable the static enrollment tool |
 | `TOOL_LISTEN` | `:8082` | Static tool port |
 | `DATA_DIR` | `/data` | `users.json`, `sessions.json`, `import/` folder, `admin.sock` (mount as a volume) |
+| `SESSION_MAX_PER_USER` | `50` | Sessions kept per user; beyond it the least recently used goes first (`0` = no limit). Stops one account from filling the table by signing in over and over |
 | `SESSION_BIND` | – | `ua`, `ip` or `ua,ip`: a session only works with the User-Agent and/or client address it was opened with. Off by default (browser updates and mobile networks change them; see [security.md](security.md#sessions-server-side)) |
 | `SESSION_TTL` | `12h` | Absolute session lifetime |
 | `SESSION_IDLE_TIMEOUT` | `0` (off) | End a session after this long without activity (e.g. `30m`); shorter than `SESSION_TTL`. Exact, recorded on the server: no Traefik option needed ([security.md](security.md#idle-timeout)) |
@@ -43,6 +44,8 @@ Ports: only `8080` is meant to be reached by the public (through Traefik). **Nev
 | Command | |
 |---|---|
 | `passkeys list` | one line per passkey: short id, user, `synced`/`device-bound`, transports, uses |
+| `passkeys label <id> <text>` | name a passkey (shown in `list` and on the enrolment page) |
+| `passkeys add <user> [label]` | print a one-time link (15 minutes) to add a passkey from another device ([enrollment.md](enrollment.md#add-a-passkey-from-another-device-a-one-time-link)) |
 | `passkeys revoke <id>` | delete a passkey and end its user's sessions; refuses the last passkey ([enrollment.md](enrollment.md#listing-and-revoking-passkeys)) |
 | `signout <user>` | end every session of a user, keep the passkeys |
 | `sessions list` | one line per live session: short id, user, site, creation, last activity, User-Agent |

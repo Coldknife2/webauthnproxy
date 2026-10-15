@@ -85,7 +85,7 @@ How the cross-domain login works: [docs/forwardauth.md](docs/forwardauth.md). Ex
 
 The static tool must be served over HTTPS under your `RP_ID` domain (not `file://`). Details: [docs/enrollment.md](docs/enrollment.md).
 
-List or revoke a passkey without editing `users.json`: `docker exec webauthnproxy /webauthnproxy passkeys list` / `passkeys revoke <id>` / `sessions list` / `sessions revoke <id>` / `signout <user>`.
+List or revoke a passkey without editing `users.json`: `docker exec webauthnproxy /webauthnproxy passkeys list` / `passkeys label <id> <text>` / `passkeys add <user>` (a one-time link to add a device) / `passkeys revoke <id>` / `sessions list` / `sessions revoke <id>` / `signout <user>`.
 The image has a `HEALTHCHECK` (`webauthnproxy healthcheck`).
 
 ### Configure

@@ -87,7 +87,7 @@ Fonctionnement du login multi-domaines : [docs/forwardauth.md](docs/forwardauth.
 
 L'outil statique doit être servi en HTTPS sous le domaine `RP_ID` (pas en `file://`). Détails : [docs/enrollment.md](docs/enrollment.md).
 
-Lister ou révoquer une passkey sans éditer `users.json` : `docker exec webauthnproxy /webauthnproxy passkeys list` / `passkeys revoke <id>` / `sessions list` / `sessions revoke <id>` / `signout <utilisateur>`.
+Lister ou révoquer une passkey sans éditer `users.json` : `docker exec webauthnproxy /webauthnproxy passkeys list` / `passkeys label <id> <texte>` / `passkeys add <utilisateur>` (lien à usage unique pour ajouter un appareil) / `passkeys revoke <id>` / `sessions list` / `sessions revoke <id>` / `signout <utilisateur>`.
 L'image embarque un `HEALTHCHECK` (`webauthnproxy healthcheck`).
 
 ### Configurer
